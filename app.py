@@ -937,7 +937,7 @@ def find_recipes(user_ingredients):
     scored_recipes = []
 
     # Get the complete recipe only once for each unique recipe.
-    for meal_id, meal_name in candidate_ids.items():
+    for meal_id, meal_name in list(candidate_ids.items())[:15]:
 
         recipe = get_recipe(meal_id)
 
