@@ -1193,6 +1193,21 @@ def match_recipe_to_pantry(recipe, pantry_items):
             pantry.add(normalized)
 
     # -----------------------------------------------------
+    # CONTEXTUAL RECIPE MATCHING
+    # -----------------------------------------------------
+    # If the recipe title clearly identifies the recipe as
+    # beef, plain "stew meat" can be treated as beef stew meat.
+    #
+    # This is intentionally contextual and does NOT change
+    # the general ingredient matching rules.
+    # -----------------------------------------------------
+    recipe_name = clean_word(
+        recipe.get("name", "")
+    )
+
+    beef_recipe = "beef" in recipe_name
+
+    # -----------------------------------------------------
     # CORE INGREDIENT MATCHING
     # -----------------------------------------------------
     # Use one central ingredient hierarchy instead of
@@ -1251,6 +1266,11 @@ def match_recipe_to_pantry(recipe, pantry_items):
             if not normalized:
                 continue
 
+            # Contextual beef stew matching.
+            # A recipe clearly identified as beef can use
+            # generic "stew meat" when the pantry contains beef.
+            # This does NOT change the general ingredient rules.
+
             # Assumed pantry staples are not tracked.
             if normalized in PANTRY_STAPLES:
                 continue
@@ -1270,7 +1290,13 @@ def match_recipe_to_pantry(recipe, pantry_items):
     substitutions = []
 
     for name, info in requirements.items():
-        if matches(name):
+        contextual_match = (
+            beef_recipe
+            and name == "stew meat"
+            and "beef" in pantry
+        )
+
+        if matches(name) or contextual_match:
             have.append({
                 "ingredient": name,
                 "original": info["original"],
