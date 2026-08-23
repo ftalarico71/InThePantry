@@ -26,6 +26,9 @@ PANTRY_STAPLES = {
     "water",
     "salt",
     "pepper",
+    "black pepper",
+    "kosher salt",
+    "sea salt",
 }
 
 
@@ -126,11 +129,20 @@ CORE_INGREDIENTS = {
         "fettuccine",
         "linguine",
         "penne",
+        "penne pasta",
         "penne rigate",
         "rigatoni",
+        "rigatoni pasta",
         "macaroni",
+        "macaroni pasta",
+        "elbow macaroni",
+        "elbow pasta",
+        "cavatappi",
+        "cavatappi pasta",
         "rotini",
+        "rotini pasta",
         "ziti",
+        "ziti pasta",
         "farfalle",
         "bow tie pasta",
         "dry pasta",
@@ -212,12 +224,31 @@ CORE_INGREDIENTS = {
         "extra virgin olive oil",
     },
 
+    # Generic cheese does NOT satisfy a specific cheese type.
+    # Specific cheeses are kept in their own families so:
+    #
+    #   cheese -> parmesan       NO
+    #   cheese -> cheddar        NO
+    #   parmesan -> grated parmesan YES
+    #   cheddar -> cheddar cheese YES
+    #
     "cheese": {
         "cheese",
+    },
+
+    "cheddar cheese": {
         "cheddar cheese",
+        "cheddar",
+    },
+
+    "mozzarella": {
+        "mozzarella",
         "mozzarella cheese",
-        "parmesan cheese",
+    },
+
+    "parmesan": {
         "parmesan",
+        "parmesan cheese",
     },
 
     # Beans are intentionally different.
@@ -425,42 +456,35 @@ SUBSTITUTION_NOTES = {
 
 COMMON_INGREDIENTS = {
     "Meat & Seafood": [
-        "chicken",
         "chicken breast",
         "chicken thigh",
         "chicken drumstick",
         "chicken wing",
+        "chicken tenders",
+        "ground chicken",
         "whole chicken",
-
-        "beef",
         "ground beef",
         "beef chuck",
         "beef brisket",
         "beef steak",
         "beef roast",
         "beef stew meat",
-
-        "pork",
         "ground pork",
         "pork chop",
         "pork loin",
         "pork shoulder",
         "pork tenderloin",
+        "pork sausage",
+        "italian sausage",
         "bacon",
         "ham",
-
-        "lamb",
         "ground lamb",
         "lamb shoulder",
         "lamb leg",
         "lamb chops",
-
-        "turkey",
         "ground turkey",
         "turkey breast",
         "turkey thigh",
-
-        "fish",
         "salmon",
         "cod",
         "haddock",
@@ -468,6 +492,7 @@ COMMON_INGREDIENTS = {
         "tuna",
         "shrimp",
     ],
+
     "Dairy & Eggs": [
         "eggs",
         "milk",
@@ -488,7 +513,6 @@ COMMON_INGREDIENTS = {
     "Pantry": [
         "flour",
         "rice",
-        "pasta",
         "beans",
         "bread",
         "tomato sauce",
@@ -497,9 +521,26 @@ COMMON_INGREDIENTS = {
     ],
 }
 
+PASTA_GROUP = {
+    "Pasta": [
+        "spaghetti",
+        "penne",
+        "rotini",
+        "rigatoni",
+        "ziti",
+        "elbow macaroni",
+        "fettuccine",
+        "linguine",
+        "angel hair",
+        "lasagna noodles",
+        "bow tie pasta",
+    ],
+}
+
+
 MEAT_GROUPS = {
+
     "Beef": [
-        "beef",
         "ground beef",
         "beef chuck",
         "beef brisket",
@@ -509,7 +550,6 @@ MEAT_GROUPS = {
     ],
 
     "Chicken": [
-        "chicken",
         "chicken breast",
         "chicken thigh",
         "chicken drumstick",
@@ -518,7 +558,6 @@ MEAT_GROUPS = {
     ],
 
     "Pork": [
-        "pork",
         "ground pork",
         "pork chop",
         "pork loin",
@@ -529,7 +568,6 @@ MEAT_GROUPS = {
     ],
 
     "Lamb": [
-        "lamb",
         "ground lamb",
         "lamb shoulder",
         "lamb leg",
@@ -537,14 +575,12 @@ MEAT_GROUPS = {
     ],
 
     "Turkey": [
-        "turkey",
         "ground turkey",
         "turkey breast",
         "turkey thigh",
     ],
 
     "Fish": [
-        "fish",
         "salmon",
         "cod",
         "haddock",
@@ -684,27 +720,12 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
 
     CORE_INGREDIENTS is the single source of truth.
 
-    A pantry ingredient matches a recipe ingredient when:
+    Most ingredient families allow approved variants to match.
 
-    1. They are the same ingredient, OR
-    2. They belong to the same approved core family.
-
-    This intentionally prevents false matches such as:
-
-        beef -> beef broth              NO
-        chicken -> chicken broth        NO
-        garlic -> garlic powder         NO
-        rice -> rice vinegar            NO
-        beans -> black beans            NO
-
-    while allowing:
-
-        beef -> ground beef             YES
-        beef -> lean ground beef        YES
-        garlic -> grated garlic         YES
-        pasta -> spaghetti              YES
-        pasta -> egg noodles            YES
-        butter -> stick butter          YES
+    Pasta is intentionally different:
+    - Generic "pasta" does NOT satisfy a specific pasta shape.
+    - A specific pasta shape does NOT satisfy generic "pasta".
+    - The exact same pasta type DOES match.
     """
 
     recipe_name = clean_word(recipe_ingredient)
@@ -715,6 +736,20 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
     recipe_name = ingredient_alias(recipe_name)
     recipe_name = clean_word(recipe_name)
 
+    if not recipe_name:
+        return False
+
+    # Normalize descriptive recipe wording before matching.
+    # Examples:
+    # ground black pepper -> pepper
+    # freshly ground black pepper -> pepper
+    # grated parmesan cheese -> parmesan cheese
+    normalized_recipe, _ = normalize_recipe_ingredient(recipe_name)
+    if normalized_recipe:
+        recipe_name = normalized_recipe
+
+    recipe_name = ingredient_alias(recipe_name)
+    recipe_name = clean_word(recipe_name)
     if not recipe_name:
         return False
 
@@ -776,6 +811,170 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
 
     recipe_core = find_core(recipe_name)
 
+    # -----------------------------------------------------
+    # SPECIFIC PASTA RULE
+    # -----------------------------------------------------
+    # Pasta is special because "pasta" is a generic category.
+    # We do not want:
+    #
+    #     pasta -> spaghetti
+    #     spaghetti -> pasta
+    #     pasta -> rotini
+    #
+    # to count as a match.
+    #
+    # The user should enter the specific pasta they have.
+    # -----------------------------------------------------
+
+    pasta_variants = {
+        "pasta",
+        "spaghetti",
+        "fettuccine",
+        "linguine",
+        "penne",
+        "penne pasta",
+        "penne rigate",
+        "rigatoni",
+        "rigatoni pasta",
+        "macaroni",
+        "macaroni pasta",
+        "elbow macaroni",
+        "elbow pasta",
+        "cavatappi",
+        "cavatappi pasta",
+        "rotini",
+        "rotini pasta",
+        "ziti",
+        "ziti pasta",
+        "farfalle",
+        "bow tie pasta",
+        "angel hair",
+        "angel hair pasta",
+        "lasagna noodles",
+        "lasagna pasta",
+        "dry pasta",
+        "vermicelli",
+        "noodles",
+        "egg noodles",
+    }
+
+    if recipe_core == "pasta" or recipe_name in pasta_variants:
+
+        for user_item in user_ingredients or []:
+
+            user_name = clean_word(user_item)
+
+            if not user_name:
+                continue
+
+            user_name = ingredient_alias(user_name)
+            user_name = clean_word(user_name)
+
+            if user_name in pasta_variants:
+
+                # Only the exact same pasta type matches.
+                if recipe_name == user_name:
+                    return True
+
+        return False
+
+    # -----------------------------------------------------
+    # SPECIFIC MEAT RULE
+    # -----------------------------------------------------
+    # Meat families are intentionally NOT interchangeable.
+    #
+    # Generic meat does NOT satisfy a specific cut/type:
+    #
+    #     beef -> beef steak             NO
+    #     chicken -> chicken breast      NO
+    #     pork -> pork chop              NO
+    #
+    # A specific cut/type also does NOT satisfy the
+    # generic meat requirement:
+    #
+    #     beef steak -> beef              NO
+    #     chicken breast -> chicken       NO
+    #
+    # Equivalent singular/plural wording DOES match:
+    #
+    #     chicken breast -> chicken breasts YES
+    #     pork chop -> pork chops           YES
+    #
+    # -----------------------------------------------------
+    meat_variants = {
+        "beef",
+        "ground beef",
+        "lean ground beef",
+        "beef chuck",
+        "beef brisket",
+        "beef shank",
+        "beef steak",
+        "beef roast",
+        "beef stew meat",
+        "beef short ribs",
+        "beef tenderloin",
+        "beef sirloin",
+
+        "chicken",
+        "chicken breast",
+        "chicken breasts",
+        "chicken thigh",
+        "chicken thighs",
+        "chicken leg",
+        "chicken legs",
+        "chicken wing",
+        "chicken wings",
+        "chicken drumstick",
+        "chicken drumsticks",
+        "boneless skinless chicken breast",
+        "boneless skinless chicken thighs",
+
+        "pork",
+        "ground pork",
+        "pork chop",
+        "pork chops",
+        "pork loin",
+        "pork shoulder",
+        "pork tenderloin",
+
+        "turkey",
+        "ground turkey",
+        "turkey breast",
+        "turkey thigh",
+
+        "lamb",
+        "ground lamb",
+        "lamb shoulder",
+        "lamb leg",
+        "lamb chops",
+    }
+
+    if recipe_name in meat_variants:
+        for user_item in user_ingredients or []:
+            user_name = clean_word(user_item)
+            if not user_name:
+                continue
+
+            user_name = ingredient_alias(user_name)
+            user_name = clean_word(user_name)
+
+            if user_name not in meat_variants:
+                continue
+
+            # Only the same meat type/cut matches.
+            # Singular/plural equivalents are allowed.
+            if recipe_name == user_name:
+                return True
+
+            if singular(recipe_name) == singular(user_name):
+                return True
+
+        return False
+
+    # -----------------------------------------------------
+    # NORMAL INGREDIENT MATCHING
+    # -----------------------------------------------------
+
     for user_item in user_ingredients or []:
 
         user_name = clean_word(user_item)
@@ -799,8 +998,7 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
 
         user_core = find_core(user_name)
 
-        # Both ingredients belong to the same approved
-        # core family.
+        # Approved ingredient family match.
         if recipe_core and user_core:
             if recipe_core == user_core:
                 return True
@@ -1003,38 +1201,27 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
     def matches(recipe_name):
         # Salt and pepper are basic pantry staples.
-        # Treat combined recipe wording such as
-        # "salt and black pepper" or "salt and pepper"
-        # as already available.
         if (
             "salt" in recipe_name
             and "pepper" in recipe_name
         ):
             return True
 
+        # Exact ingredient match.
         if recipe_name in pantry:
             return True
 
-        # CORE_INGREDIENTS is the single source of truth.
-        # A pantry core ingredient can satisfy an approved
-        # recipe variant in that same ingredient family.
-        for core_name, members in CORE_INGREDIENTS.items():
-            if recipe_name in members:
-                if core_name in pantry:
-                    return True
-                for pantry_item in pantry:
-                    if pantry_item in members:
-                        return True
-
-        # Do NOT use general substring matching here.
-        # It creates false positives such as:
-        # chicken -> chicken broth
-        # garlic -> garlic powder
-        # Only exact matches or approved ingredient families
-        # should count.
-
-        # Use the main ingredient matching engine as a
-        # final approved fallback for descriptive ingredients.
+        # Use the central ingredient matching engine.
+        #
+        # This preserves the important rules:
+        # - chicken does NOT satisfy chicken breast
+        # - chicken breast does NOT satisfy chicken
+        # - chicken breast DOES satisfy chicken breasts
+        # - beef does NOT satisfy beef steak
+        # - beef steak DOES satisfy beef steak
+        #
+        # ingredient_matches() already handles
+        # singular/plural matching and specific/generic rules.
         return ingredient_matches(
             recipe_name,
             list(pantry)
@@ -1062,6 +1249,10 @@ def match_recipe_to_pantry(recipe, pantry_items):
             )
 
             if not normalized:
+                continue
+
+            # Assumed pantry staples are not tracked.
+            if normalized in PANTRY_STAPLES:
                 continue
 
             if normalized not in requirements:
@@ -1145,6 +1336,7 @@ def match_recipe_to_pantry(recipe, pantry_items):
     }
 
 def search_web_recipes(user_ingredients, count=10):
+
     if not user_ingredients:
         return []
 
@@ -1192,31 +1384,83 @@ def search_web_recipes(user_ingredients, count=10):
         recipes = []
 
         for result in results:
-            title = result.get("title", "").strip()
-            url = result.get("url", "").strip()
-            description = result.get("description", "").strip()
+
+            title = result.get(
+                "title",
+                ""
+            ).strip()
+
+            url = result.get(
+                "url",
+                ""
+            ).strip()
+
+            description = result.get(
+                "description",
+                ""
+            ).strip()
 
             if not title or not url:
                 continue
 
-            recipes.append({
-                "title": title,
-                "url": url,
-                "description": description
-            })
+            # Try to extract the actual recipe from the page.
+            # Some websites may block the request or may not
+            # contain Recipe Schema. Those results are skipped
+            # rather than being returned as empty recipes.
+
+            recipe = extract_web_recipe(url)
+
+            if not recipe:
+                print(
+                    "Skipping search result - "
+                    "recipe could not be extracted:",
+                    url
+                )
+                continue
+
+            # Make sure the extracted recipe has the
+            # information our matching engine needs.
+
+            if not recipe.get("name"):
+                recipe["name"] = title
+
+            if not recipe.get("ingredients"):
+                print(
+                    "Skipping search result - "
+                    "no ingredients found:",
+                    url
+                )
+                continue
+
+            if not recipe.get("description"):
+                recipe["description"] = description
+
+            recipes.append(recipe)
+
+            if len(recipes) >= count:
+                break
 
         return recipes
 
     except requests.HTTPError as e:
-        print("Brave web search HTTP error:", e)
+        print(
+            "Brave web search HTTP error:",
+            e
+        )
         return []
 
     except requests.RequestException as e:
-        print("Brave web search error:", e)
+        print(
+            "Brave web search error:",
+            e
+        )
         return []
 
     except ValueError as e:
-        print("Brave web search JSON error:", e)
+        print(
+            "Brave web search JSON error:",
+            e
+        )
         return []
 
 # ---------------------------------------------------------
@@ -1286,8 +1530,44 @@ def normalize_recipe_ingredient(text):
 
     # Remove preparation descriptors.
     text = re.sub(
-        r'\b(?:diced|chopped|minced|cubed|sliced|fresh|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried)\b',
+        r'\b(?:diced|chopped|minced|cubed|sliced|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried)\b',
         ' ',
+        text
+    )
+
+    # Normalize common recipe wording that does not
+    # change the actual ingredient.
+    #
+    # Examples:
+    # "any spaghetti" -> "spaghetti"
+    # "your favorite penne" -> "penne"
+    # "ground black pepper" -> "pepper"
+    # "freshly ground black pepper" -> "pepper"
+    #
+    # This keeps recipe wording from creating false
+    # missing ingredients.
+
+    text = re.sub(
+        r'\b(?:any|some|your favorite|favorite)\s+',
+        '',
+        text
+    )
+
+    # Normalize black pepper to the pantry staple "pepper".
+    # This is intentionally specific so that:
+    # black pepper -> pepper       YES
+    # ground black pepper -> pepper YES
+    # red pepper flakes -> unchanged
+    # bell pepper -> unchanged
+    text = re.sub(
+        r'\b(?:freshly\s+ground|ground)\s+black\s+pepper\b',
+        'pepper',
+        text
+    )
+
+    text = re.sub(
+        r'\bblack\s+pepper\b',
+        'pepper',
         text
     )
 
@@ -2667,6 +2947,59 @@ document.addEventListener("DOMContentLoaded", function () {
 
             {% endfor %}
 
+        {% elif category == "Pantry" %}
+
+            <button
+                type="button"
+                class="ingredient-category meat-group"
+                onclick="toggleIngredientCategory(this)"
+            >
+                <span>Pasta</span>
+                <span class="category-arrow">▶</span>
+            </button>
+
+            <div class="ingredient-grid category-grid">
+
+                {% for ingredient in pasta_group["Pasta"] %}
+
+                    <label class="ingredient-option">
+
+                        <input
+                            type="checkbox"
+                            name="common_ingredients"
+                            value="{{ ingredient }}"
+                            {% if ingredient in selected_common %}checked{% endif %}
+                        >
+
+                        {{ ingredient|title }}
+
+                    </label>
+
+                {% endfor %}
+
+            </div>
+
+            {% for ingredient in ingredients %}
+
+                {% if ingredient not in pasta_group["Pasta"] %}
+
+                    <label class="ingredient-option">
+
+                        <input
+                            type="checkbox"
+                            name="common_ingredients"
+                            value="{{ ingredient }}"
+                            {% if ingredient in selected_common %}checked{% endif %}
+                        >
+
+                        {{ ingredient|title }}
+
+                    </label>
+
+                {% endif %}
+
+            {% endfor %}
+
         {% else %}
 
             {% for ingredient in ingredients %}
@@ -2964,6 +3297,7 @@ document.addEventListener("DOMContentLoaded", function () {
     "/",
     methods=["GET", "POST"]
 )
+
 def home():
 
     recipes = []
@@ -3016,9 +3350,9 @@ def home():
         searched=searched,
         common_ingredients=COMMON_INGREDIENTS,
         meat_groups=MEAT_GROUPS,
+        pasta_group=PASTA_GROUP,
         selected_common=selected_common
     )
-
 
 # ---------------------------------------------------------
 # START APP
