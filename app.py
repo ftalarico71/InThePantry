@@ -3,6 +3,7 @@ import requests
 import re
 import os
 import json
+import html as html_lib
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -111,6 +112,19 @@ CORE_INGREDIENTS = {
         "lamb chops",
     },
 
+    "pepper": {
+        "pepper",
+        "bell pepper",
+        "green pepper",
+        "green bell pepper",
+        "red pepper",
+        "red bell pepper",
+        "yellow pepper",
+        "yellow bell pepper",
+        "orange pepper",
+        "orange bell pepper",
+        "sweet pepper",
+    },
     "rice": {
         "rice",
         "white rice",
@@ -232,6 +246,11 @@ CORE_INGREDIENTS = {
     #   parmesan -> grated parmesan YES
     #   cheddar -> cheddar cheese YES
     #
+    "thyme": {
+        "thyme",
+        "fresh thyme",
+        "dried thyme",
+    },
     "cheese": {
         "cheese",
     },
@@ -638,6 +657,89 @@ def clean_word(text):
 
 def ingredient_alias(text):
     text = clean_word(text)
+
+    # Correct obvious misspellings before applying aliases.
+    # Only very close matches to known ingredients are corrected.
+    from difflib import get_close_matches
+
+    known_ingredients = set()
+
+    for family_values in CORE_INGREDIENTS.values():
+        known_ingredients.update(family_values)
+
+    # Also include the broader common-ingredient vocabulary.
+    # This gives typo correction access to ingredients such
+    # as tomato that are not part of CORE_INGREDIENTS.
+    for category_values in COMMON_INGREDIENTS.values():
+        known_ingredients.update(category_values)
+
+    typo_candidates = set(known_ingredients)
+
+    typo_candidates.update([
+        "olive oil",
+        "vegetable oil",
+        "ground nut oil",
+        "groundnut oil",
+        "soy sauce",
+        "tomato sauce",
+        "tomato paste",
+        "parmesan",
+        "breadcrumbs",
+    ])
+
+    if text not in typo_candidates and text and text != "cracked pepper":
+        close = get_close_matches(
+            text,
+            typo_candidates,
+            n=1,
+            cutoff=0.82
+        )
+        if close:
+            text = close[0]
+        else:
+            # Handle a common typo where two adjacent letters
+            # were accidentally typed in the wrong order.
+            words = text.split()
+            corrected_words = []
+
+            for word in words:
+                corrected = None
+                for candidate in typo_candidates:
+                    if ' ' in candidate:
+                        continue
+                    if len(candidate) != len(word):
+                        continue
+                    differences = [
+                        i for i in range(len(word))
+                        if word[i] != candidate[i]
+                    ]
+                    if len(differences) == 2:
+                        i, j = differences
+                        if j == i + 1 and word[i] == candidate[j] and word[j] == candidate[i]:
+                            corrected = candidate
+                            break
+                corrected_words.append(corrected or word)
+
+            text = ' '.join(corrected_words)
+
+            # Final fallback: allow one small edit anywhere in a
+            # single-word ingredient when the result is clearly
+            # closer to a known ingredient than the original.
+            if text == ' '.join(words):
+                best = None
+                best_distance = None
+                for candidate in typo_candidates:
+                    if ' ' in candidate or len(candidate) < 4:
+                        continue
+                    if len(candidate) - len(text) > 1 or len(text) - len(candidate) > 1:
+                        continue
+                    import difflib
+                    distance = 1 - difflib.SequenceMatcher(None, text, candidate).ratio()
+                    if best_distance is None or distance < best_distance:
+                        best_distance = distance
+                        best = candidate
+                if best is not None and best_distance <= 0.18:
+                    text = best
 
     aliases = {
         "spring onions": "onion",
@@ -1251,10 +1353,24 @@ def match_recipe_to_pantry(recipe, pantry_items):
         # Some recipe websites combine multiple ingredients
         # into one schema line, for example:
         # "diced scallions + toasted sesame seeds"
+        # Split combined ingredient lines into separate items.
+        # This allows salt and pepper to be treated as separate
+        # pantry staples in every recipe.
         parts = re.split(
             r'\s*\+\s*',
             original
         )
+        if re.search(
+            r'\bsalt\b\s+and\s+(?:(?:freshly\s+ground|ground)\s+)?\bpepper\b',
+            original,
+            re.IGNORECASE
+        ):
+            parts = re.split(
+                r'\s+and\s+',
+                original,
+                maxsplit=1,
+                flags=re.IGNORECASE
+            )
 
         for part in parts:
             normalized, alternatives = (
@@ -1272,8 +1388,35 @@ def match_recipe_to_pantry(recipe, pantry_items):
             # This does NOT change the general ingredient rules.
 
             # Assumed pantry staples are not tracked.
+            # Some recipes write "salt and pepper" as one
+            # ingredient line. After normalization, this can
+            # become "salt pepper". Treat both as pantry staples.
+            if normalized == "salt pepper":
+                continue
+
             if normalized in PANTRY_STAPLES:
                 continue
+            # Treat bell pepper varieties as one ingredient
+            # for recipe scoring.
+            pepper_variants = {
+                "bell pepper",
+                "green pepper",
+                "green bell pepper",
+                "red pepper",
+                "red bell pepper",
+                "yellow pepper",
+                "yellow bell pepper",
+                "orange pepper",
+                "orange bell pepper",
+                "sweet pepper",
+                "bell peppers",
+                "green peppers",
+                "red peppers",
+                "yellow peppers",
+                "orange peppers",
+            }
+            if normalized in pepper_variants:
+                normalized = "bell pepper"
 
             if normalized not in requirements:
                 requirements[normalized] = {
@@ -1507,133 +1650,60 @@ def search_web_recipes(user_ingredients, count=10):
 
 def normalize_recipe_ingredient(text):
     if not text:
-        return "", []
+        return '', []
 
     text = text.lower().strip()
 
     # Treat common ingredient separators as separate items.
-    text = re.sub(
-        r'\s+\+\s+',
-        ',',
-        text
-    )
+    text = re.sub(r'\s+\+\s+', ',', text)
 
     # Decode common HTML entities.
-    text = re.sub(
-        r'&quot;|&amp;',
-        ' ',
-        text
-    )
+    text = re.sub(r'&quot;|&amp;', ' ', text)
 
     # Find alternatives such as:
-    # "sesame oil (or olive oil)"
-    # "chicken broth (or water)"
-    alternatives = re.findall(
-        r'\bor\s+([^()]+)',
-        text
-    )
+    # 'sesame oil (or olive oil)'
+    # 'chicken broth (or water)'
+    alternatives = re.findall(r'\bor\s+([^()]+)', text)
 
     # Remove parenthetical preparation notes.
-    text = re.sub(
-        r'\([^)]*\)',
-        '',
-        text
-    )
+    text = re.sub(r'\([^)]*\)', '', text)
 
     # Remove quantities.
-    text = re.sub(
-        r'\b\d+(?:[./]\d+)?\b',
-        ' ',
-        text
-    )
+    text = re.sub(r'\b\d+(?:[./]\d+)?\b', ' ', text)
 
     # Remove common units and size words.
-    text = re.sub(
-        r'\b(?:lbs?|pounds?|oz|ounces?|cups?|cup|tbsp|tbs|tablespoons?|tsp|teaspoons?|cloves?|heads?|large|medium|small)\b',
-        ' ',
-        text
-    )
+    text = re.sub(r'\b(?:lbs?|pounds?|oz|ounces?|cups?|cup|tbsp|tbs|tablespoons?|tsp|teaspoons?|cloves?|heads?|large|medium|small|thin)\b', ' ', text)
 
     # Remove preparation descriptors.
-    text = re.sub(
-        r'\b(?:diced|chopped|minced|cubed|sliced|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried)\b',
-        ' ',
-        text
-    )
+    text = re.sub(r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried)\b', ' ', text)
 
-    # Normalize common recipe wording that does not
-    # change the actual ingredient.
-    #
-    # Examples:
-    # "any spaghetti" -> "spaghetti"
-    # "your favorite penne" -> "penne"
-    # "ground black pepper" -> "pepper"
-    # "freshly ground black pepper" -> "pepper"
-    #
-    # This keeps recipe wording from creating false
-    # missing ingredients.
+    # Normalize common recipe wording.
+    text = re.sub(r'\b(?:any|some|your favorite|favorite)\s+', '', text)
 
-    text = re.sub(
-        r'\b(?:any|some|your favorite|favorite)\s+',
-        '',
-        text
-    )
+    # Normalize specific ingredient descriptions.
+    # These rules deliberately preserve distinct ingredients such as
+    # bell pepper and red pepper flakes.
+    text = re.sub(r'\bcracked\s+(?:black\s+)?pepper\b', 'pepper', text)
+    text = re.sub(r'\bblack\s+peppercorns\b', 'pepper', text)
+    text = re.sub(r'\bspaghetti\s+noodles\b', 'spaghetti', text)
+    text = re.sub(r'\ba\s+sprig\s+(?:of\s+)?thyme\b', 'thyme', text)
 
-    # Normalize black pepper to the pantry staple "pepper".
-    # This is intentionally specific so that:
-    # black pepper -> pepper       YES
-    # ground black pepper -> pepper YES
-    # red pepper flakes -> unchanged
-    # bell pepper -> unchanged
-    text = re.sub(
-        r'\b(?:freshly\s+ground|ground)\s+black\s+pepper\b',
-        'pepper',
-        text
-    )
+    # Normalize black pepper to the pantry staple 'pepper'.
+    text = re.sub(r'\b(?:freshly\s+ground|ground)\s+black\s+pepper\b', 'pepper', text)
+    text = re.sub(r'\bblack\s+pepper\b', 'pepper', text)
 
-    text = re.sub(
-        r'\bblack\s+pepper\b',
-        'pepper',
-        text
-    )
+    # Normalize salt-and-pepper combinations to salt.
+    text = re.sub(r'\b(?:kosher|sea|table)?\s*salt\s+(?:and|&)\s+(?:freshly\s+ground\s+|ground\s+)?(?:black\s+)?pepper\b', 'salt', text)
 
-    # Treat common salt-and-pepper wording as separate
-    # pantry staples instead of one combined ingredient.
-    text = re.sub(
-        r'\b(?:kosher|sea|table) salt\s+and\s+'
-        r'(?:freshly ground|ground) pepper\b',
-        'salt, pepper',
-        text
-    )
+    # Remove common recipe wording.
+    text = re.sub(r'\b(?:of|to|for|as needed|divided|plus|taste)\b', ' ', text)
 
-    # Remove common recipe wording that is not part
-    # of the actual ingredient name.
-    text = re.sub(
-        r'\b(?:of|to|for|as needed|divided|plus|taste)\b',
-        ' ',
-        text
-    )
-
-    # Remove common quantity words that may remain
-    # after numeric quantities and units are removed.
-    text = re.sub(
-        r'\b(?:bunch|pinch|dash|handful|package|packages|can|cans|stick|sticks)\b',
-        ' ',
-        text
-    )
+    # Remove common quantity words.
+    text = re.sub(r'\b(?:bunch|pinch|dash|handful|package|packages|can|cans|stick|sticks)\b', ' ', text)
 
     # Keep letters and spaces.
-    text = re.sub(
-        r'[^a-z\s]',
-        ' ',
-        text
-    )
-
-    text = re.sub(
-        r'\s+',
-        ' ',
-        text
-    ).strip()
+    text = re.sub(r'[^a-z\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
 
     return text, alternatives
 
@@ -1734,9 +1804,11 @@ def extract_web_recipe(url):
             )
 
             return {
-                "name": item.get(
-                    "name",
-                    ""
+                "name": html_lib.unescape(
+                    item.get(
+                        "name",
+                        ""
+                    )
                 ),
                 "url": url,
                 "ingredients": ingredients,
@@ -2534,6 +2606,12 @@ HTML = """
         .common-ingredients h3 {
             margin-top: 0;
         }
+        .ingredient-help {
+            margin: 4px 0 12px;
+            font-size: 14px;
+            line-height: 1.4;
+            color: #666;
+        }
 
         .ingredient-grid {
     display: grid;
@@ -2917,6 +2995,7 @@ document.addEventListener("DOMContentLoaded", function () {
     <div class="common-ingredients">
 
         <h3>What do you already have?</h3>
+        <p class="ingredient-help">Quick selections are general categories. For more accurate recipe matches, select the specific ingredient you have when available, or enter it manually. For example, "Cheese" is less specific than "Cheddar Cheese."</p>
 
         
     <button
