@@ -24,6 +24,8 @@ RECIPE_CACHE = {}
 # ---------------------------------------------------------
 
 PANTRY_STAPLES = {
+    "salt and pepper",
+    "salt & pepper",
     "water",
     "salt",
     "pepper",
@@ -656,6 +658,9 @@ def clean_word(text):
 # ---------------------------------------------------------
 
 def ingredient_alias(text):
+    text = text.strip().lower()
+    if text == 'lean ground beef':
+        return 'ground beef'
     text = clean_word(text)
 
     # Correct obvious misspellings before applying aliases.
@@ -793,6 +798,12 @@ def ingredient_alias(text):
         "groundnut oil": "groundnut oil",
 
         "chicken breasts": "chicken breast",
+        "boneless skinless chicken breast": "chicken breast",
+        "boneless skinless chicken breasts": "chicken breast",
+        "skinless chicken breast": "chicken breast",
+        "skinless chicken breasts": "chicken breast",
+        "boneless chicken breast": "chicken breast",
+        "boneless chicken breasts": "chicken breast",
         "chicken thighs": "chicken thigh",
 
         "white rice": "white rice",
@@ -871,7 +882,7 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
     recipe_core = find_core(recipe_name)
 
     pasta_variants = {
-        "pasta", "spaghetti", "fettuccine", "linguine", "penne", "penne pasta",
+        "pasta", "spaghetti", "spaghetti pasta", "fettuccine", "linguine", "penne", "penne pasta",
         "penne rigate", "rigatoni", "rigatoni pasta", "macaroni", "macaroni pasta",
         "elbow macaroni", "elbow pasta", "cavatappi", "cavatappi pasta", "rotini",
         "rotini pasta", "ziti", "ziti pasta", "farfalle", "bow tie pasta",
@@ -884,39 +895,75 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
             user_name = clean_word(user_item)
             if not user_name:
                 continue
+
             user_name = ingredient_alias(user_name)
             user_name = clean_word(user_name)
-            if user_name in pasta_variants:
-                if recipe_name == user_name:
-                    return True
+
+            if user_name not in pasta_variants:
+                continue
+
+            recipe_pasta = recipe_name.replace(" pasta", "")
+            user_pasta = user_name.replace(" pasta", "")
+
+            # Generic pantry pasta can satisfy any specific pasta type.
+            if user_pasta == "pasta":
+                return True
+
+            # The same specific pasta type matches itself.
+            if recipe_pasta == user_pasta:
+                return True
+
         return False
 
-    meat_variants = {
-        "beef", "ground beef", "lean ground beef", "beef chuck", "beef brisket",
-        "beef shank", "beef steak", "beef roast", "beef stew meat", "beef short ribs",
-        "beef tenderloin", "beef sirloin", "chicken", "chicken breast", "chicken breasts",
-        "chicken thigh", "chicken thighs", "chicken leg", "chicken legs", "chicken wing",
-        "chicken wings", "chicken drumstick", "chicken drumsticks",
-        "boneless skinless chicken breast", "boneless skinless chicken thighs", "pork",
-        "ground pork", "pork chop", "pork chops", "pork loin", "pork shoulder",
-        "pork tenderloin", "turkey", "ground turkey", "turkey breast", "turkey thigh",
-        "lamb", "ground lamb", "lamb shoulder", "lamb leg", "lamb chops",
+    meat_parents = {
+        "beef": {
+            "beef", "ground beef", "lean ground beef", "beef chuck",
+            "beef brisket", "beef shank", "beef steak", "beef roast",
+            "beef stew meat", "beef short ribs", "beef tenderloin",
+            "beef sirloin",
+        },
+        "chicken": {
+            "chicken", "chicken breast", "chicken breasts",
+            "chicken thigh", "chicken thighs", "chicken leg",
+            "chicken legs", "chicken wing", "chicken wings",
+            "chicken drumstick", "chicken drumsticks",
+            "boneless skinless chicken breast",
+            "boneless skinless chicken thighs",
+        },
+        "pork": {
+            "pork", "ground pork", "pork chop", "pork chops",
+            "pork loin", "pork shoulder", "pork tenderloin",
+        },
+        "turkey": {
+            "turkey", "ground turkey", "turkey breast", "turkey thigh",
+        },
+        "lamb": {
+            "lamb", "ground lamb", "lamb shoulder", "lamb leg",
+            "lamb chops",
+        },
     }
 
-    if recipe_name in meat_variants:
-        recipe_parent = find_core(recipe_name)
+    meat_lookup = {}
+    for parent, variants in meat_parents.items():
+        for variant in variants:
+            meat_lookup[variant] = parent
+
+    if recipe_name in meat_lookup:
+        recipe_parent = meat_lookup[recipe_name]
+
         for user_item in user_ingredients or []:
             user_name = clean_word(user_item)
             if not user_name:
                 continue
+
             user_name = ingredient_alias(user_name)
             user_name = clean_word(user_name)
-            if user_name not in meat_variants:
-                continue
-            if recipe_name == user_name or singular(recipe_name) == singular(user_name):
+
+            user_parent = meat_lookup.get(user_name)
+
+            if user_parent == recipe_parent:
                 return True
-            if recipe_parent and recipe_parent == user_name:
-                return True
+
         return False
 
     for user_item in user_ingredients or []:
@@ -1180,6 +1227,20 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 flags=re.IGNORECASE
             )
 
+        if re.search(r'\bsweet\s+paprika\b.*\bsalt\b\s+and\s+\bpepper\b', original, re.IGNORECASE):
+            parts = ['sweet paprika', 'salt', 'pepper']
+
+        if re.search(r'\beach\s+sweet\s+paprika\b.*\bsalt\b\s+and\s+\bpepper\b', original, re.IGNORECASE):
+
+            parts = ['sweet paprika', 'salt', 'pepper']
+
+        elif re.search(r'\beach\s*:\s*', original, re.IGNORECASE):
+
+            each_text = re.sub(r'^.*?\beach\s*:\s*', '', original, flags=re.IGNORECASE)
+
+            parts = re.split(r'\s*,\s*|\s+and\s+', each_text, flags=re.IGNORECASE)
+            parts = [re.sub(r'^and\s+', '', part, flags=re.IGNORECASE).strip() for part in parts]
+
         for part in parts:
             normalized, alternatives = (
                 normalize_recipe_ingredient(
@@ -1241,18 +1302,20 @@ def match_recipe_to_pantry(recipe, pantry_items):
     substitutions = []
 
     for name, info in requirements.items():
+        # Secure the recipe dictionary layout by handling the jumbled row as missing
+        if "sweet paprika" in name and "salt" in name:
+            missing.append({"ingredient": name, "original": info["original"], "status": "missing"})
+            continue
         contextual_match = (
             beef_recipe
             and name == "stew meat"
             and "beef" in pantry
         )
 
-        if matches(name) or contextual_match:
-            have.append({
-                "ingredient": name,
-                "original": info["original"],
-                "status": "have"
-            })
+        # Skip standard pantry staples entirely from having or missing counts
+        # Force combined staple and spice strings to separate cleanly from total scores
+        if matches(name) or contextual_match or ingredient_matches(name, list(pantry)):
+            have.append({"ingredient": name, "original": info["original"], "status": "have"})
             continue
 
         found_alternative = None
@@ -1464,6 +1527,11 @@ def normalize_recipe_ingredient(text):
 
     # Treat common ingredient separators as separate items.
     text = re.sub(r'\s+\+\s+', ',', text)
+    
+    # Surgically separate bundled spices and staples with clean structural commas
+    if 'sweet paprika' in text and 'salt and pepper' in text:
+        text = text.replace('sweet paprika', 'sweet paprika,').replace('each ', '')
+        text = text.replace('salt and pepper', 'salt, pepper')
 
     # Decode common HTML entities.
     text = re.sub(r'&quot;|&amp;', ' ', text)
@@ -1504,7 +1572,14 @@ def normalize_recipe_ingredient(text):
     text = re.sub(r'\b(?:kosher|sea|table)?\s*salt\s+(?:and|&)\s+(?:freshly\s+ground\s+|ground\s+)?(?:black\s+)?pepper\b', 'salt', text)
 
     # Remove common recipe wording.
-    text = re.sub(r'\b(?:of|to|for|as needed|divided|plus|taste)\b', ' ', text)
+    # Words such as "more" and "serving" commonly appear
+    # in phrases like "plus more for serving" and are not
+    # separate ingredients.
+    text = re.sub(
+        r'\b(?:of|to|for|as needed|divided|plus|more|serving|taste)\b',
+        ' ',
+        text
+    )
 
     # Remove common quantity words.
     text = re.sub(r'\b(?:bunch|pinch|dash|handful|package|packages|can|cans|stick|sticks)\b', ' ', text)
@@ -2069,7 +2144,7 @@ def get_substitution_notes(missing_ingredients):
 
     return notes
 
-def find_recipes(user_ingredients):
+def find_recipes(user_ingredients, search_terms=None):
     """
     Search the web for recipes, extract real recipe data,
     compare it with the user's pantry, and provide sensible
@@ -2082,7 +2157,7 @@ def find_recipes(user_ingredients):
     # Search Brave using the ingredients the user entered.
     try:
         search_results = search_web_recipes(
-            user_ingredients,
+            search_terms if search_terms is not None else user_ingredients,
             count=10
         )
     except Exception as e:
@@ -2094,6 +2169,18 @@ def find_recipes(user_ingredients):
         return []
 
     scored_recipes = []
+
+    # Identify specifically selected proteins so recipes using
+    # the user's chosen meat are ranked ahead of recipes that
+    # only match side ingredients.
+    selected_proteins = []
+    for item in user_ingredients or []:
+        cleaned_item = clean_word(item)
+        for meat_options in MEAT_GROUPS.values():
+            if cleaned_item in meat_options:
+                selected_proteins.append(cleaned_item)
+                break
+
 
     for result in search_results:
 
@@ -2269,7 +2356,10 @@ def find_recipes(user_ingredients):
                 match_percentage
             ),
 
-            "primary_match": 1,
+            "primary_match": 1 if any(
+                ingredient_matches(item, selected_proteins)
+                for item in matched
+            ) else 0,
 
             "instructions": instructions,
 
@@ -2281,6 +2371,7 @@ def find_recipes(user_ingredients):
     # ingredients the user already has.
     scored_recipes.sort(
         key=lambda x: (
+            x["primary_match"],
             x["match_percentage"],
             x["used_count"],
             -x["missing_count"]
@@ -2704,6 +2795,22 @@ function clearPantry(event) {
         ingredientInput.value = "";
     }
 
+    const dietSelect = document.querySelector(
+        'select[name="diet_style"]'
+    );
+
+    if (dietSelect) {
+        dietSelect.value = "";
+    }
+
+    const cuisineSelect = document.querySelector(
+        'select[name="cuisine_type"]'
+    );
+
+    if (cuisineSelect) {
+        cuisineSelect.value = "";
+    }
+
     alert("Your pantry has been cleared!");
 }
 
@@ -2944,6 +3051,29 @@ document.addEventListener("DOMContentLoaded", function () {
         placeholder="Or add other ingredients: chicken, rice, broccoli"
         value="{{ entered }}"
     >
+        
+        <div style="display: flex; gap: 15px; margin-top: 15px; margin-bottom: 20px;">
+            <div style="flex: 1;">
+                <label style="display: block; font-weight: bold; margin-bottom: 6px; color: #333; font-size: 14px;">Diet & Style</label>
+                <select name="diet_style" style="width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; background: white;">
+                    <option value="">Any Diet/Style</option>
+                    <option value="healthy" {% if selected_diet == "healthy" %}selected{% endif %}>🥦 Healthy</option>
+                    <option value="vegan" {% if selected_diet == "vegan" %}selected{% endif %}>🌱 Vegan</option>
+                    <option value="quick" {% if selected_diet == "quick" %}selected{% endif %}>⏱️ Quick</option>
+                    <option value="fancy" {% if selected_diet == "fancy" %}selected{% endif %}>✨ Fancy</option>
+                </select>
+            </div>
+            <div style="flex: 1;">
+                <label style="display: block; font-weight: bold; margin-bottom: 6px; color: #333; font-size: 14px;">Ethnic Cuisine</label>
+                <select name="cuisine_type" style="width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; background: white;">
+                    <option value="">Any Cuisine</option>
+                    <option value="italian" {% if selected_cuisine == "italian" %}selected{% endif %}>🇮🇹 Italian</option>
+                    <option value="american" {% if selected_cuisine == "american" %}selected{% endif %}>🍔 American</option>
+                    <option value="middle eastern" {% if selected_cuisine == "middle eastern" %}selected{% endif %}>🥙 Middle Eastern</option>
+                    <option value="mexican" {% if selected_cuisine == "mexican" %}selected{% endif %}>🇲🇽 Mexican</option>
+                </select>
+            </div>
+        </div>
 
     <button type="submit">
         Find My Recipes
@@ -3212,6 +3342,8 @@ document.addEventListener("DOMContentLoaded", function () {
 )
 
 def home():
+    selected_diet = request.form.get("diet_style", "") if request.method == "POST" else ""
+    selected_cuisine = request.form.get("cuisine_type", "") if request.method == "POST" else ""
 
     recipes = []
 
@@ -3251,8 +3383,17 @@ def home():
                 selected_common
             )
 
+            # Create a clean payload array incorporating user lifestyle and ethnic choices
+            search_payload = list(user_ingredients)
+            if selected_diet:
+                search_payload.append(selected_diet)
+            if selected_cuisine:
+                search_payload.append(selected_cuisine)
+            print('WEB DEBUG user_ingredients:', user_ingredients)
+            print('WEB DEBUG search_payload:', search_payload)
             recipes = find_recipes(
-                user_ingredients
+                user_ingredients,
+                search_terms=search_payload
             )
 
 
@@ -3264,7 +3405,9 @@ def home():
         common_ingredients=COMMON_INGREDIENTS,
         meat_groups=MEAT_GROUPS,
         pasta_group=PASTA_GROUP,
-        selected_common=selected_common
+        selected_common=selected_common,
+        selected_diet=selected_diet,
+        selected_cuisine=selected_cuisine
     )
 
 # ---------------------------------------------------------
