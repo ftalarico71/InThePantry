@@ -817,35 +817,15 @@ def ingredient_alias(text):
 # ---------------------------------------------------------
 
 def ingredient_matches(recipe_ingredient, user_ingredients):
-    """
-    CORE INGREDIENT MATCHING ENGINE
-
-    CORE_INGREDIENTS is the single source of truth.
-
-    Most ingredient families allow approved variants to match.
-
-    Pasta is intentionally different:
-    - Generic "pasta" does NOT satisfy a specific pasta shape.
-    - A specific pasta shape does NOT satisfy generic "pasta".
-    - The exact same pasta type DOES match.
-    """
-
     recipe_name = clean_word(recipe_ingredient)
-
     if not recipe_name:
         return False
 
     recipe_name = ingredient_alias(recipe_name)
     recipe_name = clean_word(recipe_name)
-
     if not recipe_name:
         return False
 
-    # Normalize descriptive recipe wording before matching.
-    # Examples:
-    # ground black pepper -> pepper
-    # freshly ground black pepper -> pepper
-    # grated parmesan cheese -> parmesan cheese
     normalized_recipe, _ = normalize_recipe_ingredient(recipe_name)
     if normalized_recipe:
         recipe_name = normalized_recipe
@@ -855,280 +835,108 @@ def ingredient_matches(recipe_ingredient, user_ingredients):
     if not recipe_name:
         return False
 
-    # Pantry staples are always available.
     if recipe_name in PANTRY_STAPLES:
         return True
 
     def singular(word):
         word = clean_word(word)
-
         if word.endswith("ies"):
             return word[:-3] + "y"
-
         if word.endswith("s") and not word.endswith("ss"):
             return word[:-1]
-
         return word
 
     def find_core(ingredient):
-        """
-        Return the core ingredient family containing
-        this exact ingredient variant.
-        """
-
         ingredient = clean_word(ingredient)
-
         if not ingredient:
             return None
-
         ingredient = ingredient_alias(ingredient)
         ingredient = clean_word(ingredient)
-
         ingredient_singular = singular(ingredient)
 
         for core_name, variants in CORE_INGREDIENTS.items():
-
             core_name_clean = clean_word(core_name)
-
-            all_variants = {
-                core_name_clean
-            }
-
+            all_variants = {core_name_clean}
             for variant in variants:
                 variant_clean = clean_word(variant)
-
                 if variant_clean:
                     all_variants.add(variant_clean)
-
-            # Exact variant match.
             if ingredient in all_variants:
                 return core_name
-
-            # Singular/plural match.
             for variant in all_variants:
                 if ingredient_singular == singular(variant):
                     return core_name
-
         return None
 
     recipe_core = find_core(recipe_name)
 
-    # -----------------------------------------------------
-    # SPECIFIC PASTA RULE
-    # -----------------------------------------------------
-    # Pasta is special because "pasta" is a generic category.
-    # We do not want:
-    #
-    #     pasta -> spaghetti
-    #     spaghetti -> pasta
-    #     pasta -> rotini
-    #
-    # to count as a match.
-    #
-    # The user should enter the specific pasta they have.
-    # -----------------------------------------------------
-
     pasta_variants = {
-        "pasta",
-        "spaghetti",
-        "fettuccine",
-        "linguine",
-        "penne",
-        "penne pasta",
-        "penne rigate",
-        "rigatoni",
-        "rigatoni pasta",
-        "macaroni",
-        "macaroni pasta",
-        "elbow macaroni",
-        "elbow pasta",
-        "cavatappi",
-        "cavatappi pasta",
-        "rotini",
-        "rotini pasta",
-        "ziti",
-        "ziti pasta",
-        "farfalle",
-        "bow tie pasta",
-        "angel hair",
-        "angel hair pasta",
-        "lasagna noodles",
-        "lasagna pasta",
-        "dry pasta",
-        "vermicelli",
-        "noodles",
-        "egg noodles",
+        "pasta", "spaghetti", "fettuccine", "linguine", "penne", "penne pasta",
+        "penne rigate", "rigatoni", "rigatoni pasta", "macaroni", "macaroni pasta",
+        "elbow macaroni", "elbow pasta", "cavatappi", "cavatappi pasta", "rotini",
+        "rotini pasta", "ziti", "ziti pasta", "farfalle", "bow tie pasta",
+        "angel hair", "angel hair pasta", "lasagna noodles", "lasagna pasta",
+        "dry pasta", "vermicelli", "noodles", "egg noodles",
     }
 
     if recipe_core == "pasta" or recipe_name in pasta_variants:
-
         for user_item in user_ingredients or []:
-
             user_name = clean_word(user_item)
-
             if not user_name:
                 continue
-
             user_name = ingredient_alias(user_name)
             user_name = clean_word(user_name)
-
             if user_name in pasta_variants:
-
-                # Only the exact same pasta type matches.
                 if recipe_name == user_name:
                     return True
-
         return False
 
-    # -----------------------------------------------------
-    # SPECIFIC MEAT RULE
-    # -----------------------------------------------------
-    # Meat families are intentionally NOT interchangeable.
-    #
-    # Generic meat does NOT satisfy a specific cut/type:
-    #
-    #     beef -> beef steak             NO
-    #     chicken -> chicken breast      NO
-    #     pork -> pork chop              NO
-    #
-    # A specific cut/type also does NOT satisfy the
-    # generic meat requirement:
-    #
-    #     beef steak -> beef              NO
-    #     chicken breast -> chicken       NO
-    #
-    # Equivalent singular/plural wording DOES match:
-    #
-    #     chicken breast -> chicken breasts YES
-    #     pork chop -> pork chops           YES
-    #
-    # -----------------------------------------------------
     meat_variants = {
-        "beef",
-        "ground beef",
-        "lean ground beef",
-        "beef chuck",
-        "beef brisket",
-        "beef shank",
-        "beef steak",
-        "beef roast",
-        "beef stew meat",
-        "beef short ribs",
-        "beef tenderloin",
-        "beef sirloin",
-
-        "chicken",
-        "chicken breast",
-        "chicken breasts",
-        "chicken thigh",
-        "chicken thighs",
-        "chicken leg",
-        "chicken legs",
-        "chicken wing",
-        "chicken wings",
-        "chicken drumstick",
-        "chicken drumsticks",
-        "boneless skinless chicken breast",
-        "boneless skinless chicken thighs",
-
-        "pork",
-        "ground pork",
-        "pork chop",
-        "pork chops",
-        "pork loin",
-        "pork shoulder",
-        "pork tenderloin",
-
-        "turkey",
-        "ground turkey",
-        "turkey breast",
-        "turkey thigh",
-
-        "lamb",
-        "ground lamb",
-        "lamb shoulder",
-        "lamb leg",
-        "lamb chops",
+        "beef", "ground beef", "lean ground beef", "beef chuck", "beef brisket",
+        "beef shank", "beef steak", "beef roast", "beef stew meat", "beef short ribs",
+        "beef tenderloin", "beef sirloin", "chicken", "chicken breast", "chicken breasts",
+        "chicken thigh", "chicken thighs", "chicken leg", "chicken legs", "chicken wing",
+        "chicken wings", "chicken drumstick", "chicken drumsticks",
+        "boneless skinless chicken breast", "boneless skinless chicken thighs", "pork",
+        "ground pork", "pork chop", "pork chops", "pork loin", "pork shoulder",
+        "pork tenderloin", "turkey", "ground turkey", "turkey breast", "turkey thigh",
+        "lamb", "ground lamb", "lamb shoulder", "lamb leg", "lamb chops",
     }
 
     if recipe_name in meat_variants:
+        recipe_parent = find_core(recipe_name)
         for user_item in user_ingredients or []:
             user_name = clean_word(user_item)
             if not user_name:
                 continue
-
             user_name = ingredient_alias(user_name)
             user_name = clean_word(user_name)
-
             if user_name not in meat_variants:
                 continue
-
-            # Only the same meat type/cut matches.
-            # Singular/plural equivalents are allowed.
-            if recipe_name == user_name:
+            if recipe_name == user_name or singular(recipe_name) == singular(user_name):
                 return True
-
-            if singular(recipe_name) == singular(user_name):
+            if recipe_parent and recipe_parent == user_name:
                 return True
-
         return False
 
-    # -----------------------------------------------------
-    # NORMAL INGREDIENT MATCHING
-    # -----------------------------------------------------
-
     for user_item in user_ingredients or []:
-
         user_name = clean_word(user_item)
-
         if not user_name:
             continue
-
         user_name = ingredient_alias(user_name)
         user_name = clean_word(user_name)
-
         if not user_name:
             continue
-
-        # Exact ingredient match.
-        if recipe_name == user_name:
+        if recipe_name == user_name or singular(recipe_name) == singular(user_name):
             return True
-
-        # Singular/plural exact match.
-        if singular(recipe_name) == singular(user_name):
-            return True
-
         user_core = find_core(user_name)
-
-        # Approved ingredient family match.
-        if recipe_core and user_core:
-            if recipe_core == user_core:
-                return True
+        if recipe_core and user_core and recipe_core == user_core:
+            if recipe_core == 'pepper':
+                continue
+            return True
 
     return False
 
-# ---------------------------------------------------------
-# SEARCH RECIPES
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# SEARCH RECIPES - RECIPE API
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# WEB RECIPE SEARCH - BRAVE
-# Searches the real internet for recipes.
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# PANTRY MATCH ENGINE
-# Compares a web recipe against what the user has.
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# SENSIBLE SUBSTITUTION ENGINE
-# Provides ingredient-specific substitutions.
-# ---------------------------------------------------------
 
 def get_sensible_substitutions(ingredient):
     name = ingredient.lower().strip()
