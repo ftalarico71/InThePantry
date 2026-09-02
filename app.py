@@ -2859,7 +2859,13 @@ def search_web_recipes(user_ingredients, count=10):
             timeout=10
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            print(
+                "Brave API response:",
+                response.status_code,
+                response.text
+            )
+            response.raise_for_status()
 
         data = response.json()
 
