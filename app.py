@@ -4092,6 +4092,7 @@ def find_recipes(
     user_ingredients,
     search_terms=None,
     selected_cuisine=None,
+    selected_diet=None,
 ):
     """
     Search the web for recipes, extract real recipe data,
@@ -4321,6 +4322,19 @@ def find_recipes(
                 else 0
             ),
 
+            "diet_match": (
+                1
+                if selected_diet == "vegan"
+                and any(
+                    str(diet).strip().lower() == "vegan"
+                    for diet in recipe.get(
+                        "suitableForDiet",
+                        []
+                    )
+                )
+                else 0
+            ),
+
             "instructions": instructions,
 
             "source": url
@@ -4331,6 +4345,7 @@ def find_recipes(
     # ingredients the user already has.
     scored_recipes.sort(
         key=lambda x: (
+            x["diet_match"],
             x["cuisine_match"],
             x["primary_match"],
             x["match_percentage"],
@@ -5368,7 +5383,8 @@ def home():
             recipes = find_recipes(
                 user_ingredients,
                 search_terms=search_payload,
-                selected_cuisine=selected_cuisine
+                selected_cuisine=selected_cuisine,
+                selected_diet=selected_diet
             )
 
 
