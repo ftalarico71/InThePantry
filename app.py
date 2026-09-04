@@ -4075,7 +4075,11 @@ def get_substitution_notes(missing_ingredients):
 
     return notes
 
-def find_recipes(user_ingredients, search_terms=None):
+def find_recipes(
+    user_ingredients,
+    search_terms=None,
+    selected_cuisine=None,
+):
     """
     Search the web for recipes, extract real recipe data,
     compare it with the user's pantry, and provide sensible
@@ -4290,6 +4294,20 @@ def find_recipes(user_ingredients, search_terms=None):
                 for item in matched
             ) else 0,
 
+            "cuisine_match": (
+                1
+                if selected_cuisine
+                and any(
+                    selected_cuisine.lower()
+                    == str(cuisine).strip().lower()
+                    for cuisine in recipe.get(
+                        "recipeCuisine",
+                        []
+                    )
+                )
+                else 0
+            ),
+
             "instructions": instructions,
 
             "source": url
@@ -4300,6 +4318,7 @@ def find_recipes(user_ingredients, search_terms=None):
     # ingredients the user already has.
     scored_recipes.sort(
         key=lambda x: (
+            x["cuisine_match"],
             x["primary_match"],
             x["match_percentage"],
             x["used_count"],
@@ -5335,7 +5354,8 @@ def home():
                 search_payload.append(selected_cuisine)
             recipes = find_recipes(
                 user_ingredients,
-                search_terms=search_payload
+                search_terms=search_payload,
+                selected_cuisine=selected_cuisine
             )
 
 
