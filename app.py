@@ -651,6 +651,10 @@ def clean_word(text):
         text
     )
 
+    # Universal animal-raising descriptor. "Free range" describes
+    # the source/raising method, not the ingredient identity.
+    text = re.sub(r"\bfree\s+range\b", "", text)
+
     text = re.sub(r"[^a-zA-Z\s]", "", text)
 
     text = re.sub(r"\s+", " ", text).strip()
