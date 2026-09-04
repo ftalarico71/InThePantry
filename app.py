@@ -4589,6 +4589,13 @@ HTML = """
             font-weight: bold;
         }
 
+        .recipe-note {
+            margin: 8px 0 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #666;
+        }
+
         .ingredients {
             background: #fafafa;
             padding: 15px;
@@ -5171,6 +5178,14 @@ document.addEventListener("DOMContentLoaded", function () {
 
                     <div class="recipe-details" style="display: none;">
                         <h3>Ingredients</h3>
+
+                        <p class="recipe-note">
+                            <strong>Recipe details:</strong>
+                            Exact amounts, measurements, preparation details,
+                            and cooking instructions are provided by the original
+                            recipe. Please check the original recipe for complete
+                            details.
+                        </p>
 
 <div class="ingredients">
     {% for ingredient in recipe.ingredients %}
