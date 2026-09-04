@@ -977,17 +977,27 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             if clean_word(x) in {"white rice", "brown rice", "basmati rice", "jasmine rice", "long grain rice", "long grain white rice", "extra long grain white rice", "microwave brown rice"}:
                 return False
 
-    # Preserve oil direction before broad core matching collapses
-    # specific oil products into the generic "oil" core.
+    # Preserve oil-family direction before broad core matching.
     #
-    # Generic pantry "oil" can satisfy a specific recipe oil.
-    # Specific pantry oils cannot satisfy generic recipe "oil".
-    # Specific oil products cannot substitute for other specific oils.
-    oil_variants = {
-        "oil",
+    # Olive-oil variants are one family:
+    #   olive oil = virgin olive oil = extra virgin olive oil = light olive oil
+    #
+    # Generic cooking oils are a separate family:
+    #   oil = cooking oil = vegetable oil = canola oil = avocado oil
+    #   = coconut oil = sesame oil = peanut oil = grapeseed oil
+    #
+    # Generic "oil" can satisfy any specific cooking-oil recipe, but
+    # olive oil remains distinct from non-olive cooking oils.
+    olive_oil_family = {
         "olive oil",
+        "virgin olive oil",
         "extra virgin olive oil",
         "light olive oil",
+    }
+
+    cooking_oil_family = {
+        "oil",
+        "cooking oil",
         "vegetable oil",
         "canola oil",
         "avocado oil",
@@ -997,23 +1007,31 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         "grapeseed oil",
     }
 
-    if original_recipe_name in oil_variants:
+    oil_family = olive_oil_family | cooking_oil_family
+
+    if original_recipe_name in oil_family:
         for x in (user_ingredients or []):
             user_raw = clean_word(x)
 
-            if user_raw not in oil_variants:
+            if user_raw not in oil_family:
                 continue
 
-            # Exact same oil is valid.
-            if user_raw == original_recipe_name:
+            # Olive-oil variants match every other olive-oil variant.
+            if (
+                original_recipe_name in olive_oil_family
+                and user_raw in olive_oil_family
+            ):
                 return True
 
-            # Generic pantry oil can satisfy a specific recipe oil.
-            if original_recipe_name != "oil" and user_raw == "oil":
+            # Generic cooking oil matches any member of the cooking-oil
+            # family, including a recipe that simply says "oil".
+            if (
+                original_recipe_name in cooking_oil_family
+                and user_raw in cooking_oil_family
+            ):
                 return True
 
-            # Specific pantry oil cannot satisfy generic recipe oil
-            # or substitute for another specific oil.
+            # Olive oil and non-olive cooking oils remain distinct.
             return False
 
     normalized_recipe, _ = normalize_recipe_ingredient(recipe_name)
