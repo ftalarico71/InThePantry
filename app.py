@@ -3328,6 +3328,15 @@ def normalize_recipe_ingredient(text):
     # Remove preparation descriptors.
     text = re.sub(r'\bstems?\s+removed\b', ' ', text)
 
+    # "Patted dry" and any preparation wording that follows it
+    # are recipe metadata, not ingredient identity.
+    text = re.sub(
+        r'\s*,?\s*\bpatted\s+dry\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
     # Remove a trailing preparation instruction universally.
     # Once the ingredient is named, everything after a preparation
     # phrase such as cut into / cut in / cut up into is recipe metadata.
