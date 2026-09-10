@@ -531,6 +531,7 @@ COMMON_INGREDIENTS = {
         "onion",
         "garlic",
         "tomato",
+        "grape / cherry tomatoes",
         "broccoli",
         "carrots",
         "bell pepper",
@@ -545,6 +546,17 @@ COMMON_INGREDIENTS = {
         "olive oil",
         "vegetable oil",
     ],
+    "Plant-Based": [
+        "tofu",
+        "tempeh",
+        "seitan",
+        "plant-based chicken",
+        "plant-based beef",
+        "plant-based sausage",
+        "vegan cheese",
+        "vegan butter",
+    ],
+
 }
 
 PASTA_GROUP = {
@@ -839,6 +851,38 @@ def ingredient_alias(text):
 def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
     original_recipe_name = clean_word(recipe_ingredient)
 
+    # -----------------------------------------------------
+    # UNIVERSAL VEGAN / PLANT-BASED SEPARATION
+    # -----------------------------------------------------
+    # Vegan and plant-based versions may match each other.
+    # They must remain separate from ordinary animal ingredients.
+    # Ordinary ingredients with no dietary qualifier are unaffected.
+    # -----------------------------------------------------
+    recipe_is_plant_based = bool(
+        re.search(r"\bvegan\b", original_recipe_name)
+        or re.search(r"\bplant\s+based\b", original_recipe_name)
+    )
+
+    for raw_user_item in user_ingredients or []:
+        raw_user_name = clean_word(raw_user_item)
+        if not raw_user_name:
+            continue
+
+        user_is_plant_based = bool(
+            re.search(r"\bvegan\b", raw_user_name)
+            or re.search(r"\bplant\s+based\b", raw_user_name)
+        )
+
+        # Only enforce dietary separation when at least one side
+        # explicitly identifies itself as vegan/plant-based.
+        if recipe_is_plant_based or user_is_plant_based:
+            if recipe_is_plant_based != user_is_plant_based:
+                continue
+
+        # The compatible pantry item stays in the normal matching flow.
+        # Do not remove ordinary pantry ingredients from the list.
+
+
     # Preparation-state phrases containing "pasta" are not
     # standalone pasta ingredients.
     pasta_preparation_phrases = {
@@ -895,6 +939,81 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
     recipe_name = clean_word(recipe_name)
     if not recipe_name:
         return False
+
+    # Preserve tomato-family direction before broad core matching.
+    # Generic tomato may satisfy standard tomato varieties such as
+    # Roma, plum, beefsteak, heirloom, and vine-ripened tomatoes.
+    # Small tomato varieties are a separate family: generic tomato
+    # does not imply grape, cherry, currant, mini, or baby tomatoes.
+    tomato_standard_terms = {
+        "roma tomato", "roma tomatoes",
+        "plum tomato", "plum tomatoes",
+        "beefsteak tomato", "beefsteak tomatoes",
+        "heirloom tomato", "heirloom tomatoes",
+        "vine tomato", "vine tomatoes",
+        "vine-ripened tomato", "vine-ripened tomatoes",
+        "on the vine tomato", "on the vine tomatoes",
+        "slicing tomato", "slicing tomatoes",
+    }
+
+    tomato_small_pattern = re.compile(
+        r"\b(?:grape|cherry|currant|mini|baby|small|sungold|sun gold)\s+tomatoes?\b"
+    )
+
+    def tomato_family(name):
+        name = clean_word(name)
+        if not name:
+            return None
+
+        if tomato_small_pattern.search(name):
+            return "small"
+
+        if name in tomato_standard_terms:
+            return "standard"
+
+        if name in {"tomato", "tomatoes"}:
+            return "generic"
+
+        # Generic descriptive wording still means ordinary tomatoes.
+        # Do not include size/type wording here; small varieties are separate.
+        if re.fullmatch(
+            r"(?:various|different|assorted|fresh|ripe|whole)\s+tomatoes?",
+            name,
+        ):
+            return "generic"
+
+        return None
+
+    recipe_tomato_family = tomato_family(original_recipe_name)
+
+    if recipe_tomato_family:
+        for x in (user_ingredients or []):
+            original_user_name = clean_word(x)
+            user_tomato_family = tomato_family(original_user_name)
+
+            if not user_tomato_family:
+                continue
+
+            # Exact same tomato wording is always valid.
+            if clean_word(original_recipe_name) == clean_word(original_user_name):
+                return True
+
+            # Small tomatoes form their own interchangeable family.
+            # Generic or standard tomatoes do not satisfy a small-tomato recipe.
+            if recipe_tomato_family == "small":
+                if user_tomato_family == "small":
+                    return True
+                continue
+
+            # Generic pantry tomato can satisfy a standard tomato variety.
+            if recipe_tomato_family == "standard":
+                if user_tomato_family == "generic":
+                    return True
+                continue
+
+            # A specific tomato variety does not satisfy a generic recipe tomato.
+            if recipe_tomato_family == "generic":
+                continue
 
     # Preserve pepper direction before normalization collapses variants.
     # Generic pantry pepper can satisfy any recognized specific pepper
@@ -1498,194 +1617,87 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
     #   beef or chopped pork
     # can match either valid alternative.
     # -----------------------------------------------------
-    if " or " in recipe_name:
-        alternatives = [
-            part.strip()
-            for part in recipe_name.split(" or ")
-            if part.strip()
-        ]
+    if " or " in original_recipe_name:
+        # Normalize the complete OR expression once. The normalizer returns
+        # the primary ingredient plus the explicit OR alternatives.
+        normalized_primary, normalized_alternatives = normalize_recipe_ingredient(
+            original_recipe_name
+        )
 
-        if len(alternatives) > 1:
-            first_words = alternatives[0].split()
-            expanded = [alternatives[0]]
+        or_alternatives = []
+        if normalized_primary:
+            or_alternatives.append(normalized_primary)
+        or_alternatives.extend(
+            alternative
+            for alternative in normalized_alternatives
+            if alternative
+        )
 
-            # Expand abbreviated alternatives such as
-            # "chicken breasts or thighs" ->
-            # "chicken breasts" / "chicken thighs".
-            expanded = [alternatives[0]]
+        for alternative in or_alternatives:
+            alternative_clean = clean_word(alternative)
+            alternative_clean = ingredient_alias(alternative_clean)
+            alternative_clean = clean_word(alternative_clean)
 
-            if len(first_words) >= 2:
-                shared_prefix = " ".join(first_words[:-1])
+            if not alternative_clean:
+                continue
 
-                for alternative in alternatives[1:]:
-                    alternative_words = alternative.split()
+            for user_item in user_ingredients or []:
+                user_clean = clean_word(user_item)
+                user_clean = ingredient_alias(user_clean)
+                user_clean = clean_word(user_clean)
 
-                    if len(alternative_words) == 1:
-                        # Keep BOTH interpretations.
-                        #
-                        # Independent alternative:
-                        #   broccoli florets or asparagus
-                        #       -> asparagus
-                        #
-                        # Abbreviated shared-prefix alternative:
-                        #   chicken breasts or thighs
-                        #       -> chicken thighs
-                        #
-                        # This makes OR matching universal instead of
-                        # assuming every one-word alternative belongs
-                        # to the first ingredient.
-                        expanded.append(alternative)
-                        expanded.append(
-                            shared_prefix + " " + alternative
-                        )
-                    else:
-                        expanded.append(alternative)
-            else:
-                expanded.extend(alternatives[1:])
-
-            for alternative in expanded:
-                alternative_clean = clean_word(alternative)
-                alternative_clean = ingredient_alias(alternative_clean)
-                alternative_clean = clean_word(alternative_clean)
-
-                if not alternative_clean:
+                if not user_clean:
                     continue
 
-                # Normalize each alternative independently. This removes
-                # universal preparation descriptors such as chopped, diced,
-                # sliced, bone-in, boneless, florets, etc.
-                normalized_alternative, _ = normalize_recipe_ingredient(
-                    alternative_clean
-                )
-                if normalized_alternative:
-                    alternative_clean = normalized_alternative
-
-                alternative_clean = ingredient_alias(alternative_clean)
-                alternative_clean = clean_word(alternative_clean)
-
-                if not alternative_clean:
-                    continue
-
-                alternative_core = find_core(alternative_clean)
-
-                # Meat alternatives must not bypass the authoritative meat
-                # hierarchy below through direct/core OR matching.
-                alternative_is_meat = alternative_clean in {
-                    "beef", "ground beef", "steak", "ribeye", "rib eye",
-                    "sirloin", "sirloin steak", "new york strip",
-                    "new york strip steak", "ny strip", "ny strip steak",
-                    "strip steak", "filet", "filet mignon",
-                    "tenderloin", "tenderloin steak", "porterhouse",
-                    "porterhouse steak", "t-bone", "t-bone steak",
-                    "flat iron steak", "flank steak", "skirt steak",
+                # Preserve the strict meat direction inside OR expressions:
+                # generic pantry meat cannot satisfy a specific meat option.
+                generic_meats = {
+                    "beef",
+                    "chicken",
+                    "pork",
+                    "turkey",
+                    "lamb",
+                }
+                meat_words = {
+                    "beef", "steak", "ribeye", "rib eye", "sirloin",
+                    "sirloin steak", "new york strip", "new york strip steak",
+                    "ny strip", "ny strip steak", "strip steak", "filet",
+                    "filet mignon", "tenderloin", "tenderloin steak", "porterhouse",
+                    "porterhouse steak", "t-bone", "t-bone steak", "flat iron steak",
+                    "flank steak", "skirt steak",
                     "chicken", "chicken breast", "chicken breasts",
-                    "chicken thigh", "chicken thighs", "chicken leg",
-                    "chicken legs", "chicken wing", "chicken wings",
-                    "chicken drumstick", "chicken drumsticks",
-                    "chicken tender", "chicken tenders", "chicken cutlet",
-                    "chicken cutlets", "whole chicken", "ground chicken",
-                    "pork", "pork chop", "pork chops", "pork loin",
-                    "pork shoulder", "pork tenderloin", "pork belly",
-                    "pork rib", "pork ribs", "baby back ribs", "spare ribs",
-                    "ground pork", "turkey", "turkey breast", "turkey breasts",
-                    "turkey thigh", "turkey thighs", "turkey leg", "turkey legs",
-                    "turkey wing", "turkey wings", "turkey tender",
-                    "turkey tenders", "whole turkey", "ground turkey",
-                    "lamb", "lamb shoulder", "lamb leg", "lamb legs",
-                    "lamb chop", "lamb chops", "lamb loin", "lamb loins",
-                    "lamb shank", "lamb shanks", "lamb rack", "rack of lamb",
-                    "lamb rib", "lamb ribs", "ground lamb"
+                    "chicken thigh", "chicken thighs", "chicken leg", "chicken legs",
+                    "chicken wing", "chicken wings", "chicken drumstick",
+                    "chicken drumsticks", "chicken tender", "chicken tenders",
+                    "chicken cutlet", "chicken cutlets", "whole chicken",
+                    "pork", "pork chop", "pork chops", "pork loin", "pork loins",
+                    "pork shoulder", "pork shoulders", "pork tenderloin",
+                    "pork tenderloins", "pork belly", "pork rib", "pork ribs",
+                    "turkey", "turkey breast", "turkey breasts", "turkey thigh",
+                    "turkey thighs", "turkey leg", "turkey legs", "turkey wing",
+                    "turkey wings", "turkey tender", "turkey tenders", "whole turkey",
+                    "lamb", "lamb shoulder", "lamb leg", "lamb legs", "lamb chop",
+                    "lamb chops", "lamb loin", "lamb loins", "lamb shank",
+                    "lamb shanks", "lamb rack", "rack of lamb", "lamb rib", "lamb ribs",
                 }
 
-                for user_item in user_ingredients or []:
-                    user_name = clean_word(user_item)
-                    if not user_name:
+                if user_clean in generic_meats and alternative_clean in meat_words:
+                    if alternative_clean != user_clean:
                         continue
 
-                    user_name = ingredient_alias(user_name)
-                    user_name = clean_word(user_name)
+                # For all other ingredients, reuse the normal matcher so
+                # descriptive wording such as "chopped asparagus" and
+                # "broccoli florets" follows the universal ingredient rules.
+                if ingredient_matches(
+                    alternative_clean,
+                    [user_item],
+                    allow_pantry_staple=False,
+                ):
+                    return True
 
-                    # Normalize pantry wording too. This allows a pantry item
-                    # such as "bone-in chicken" or "boneless chicken" to
-                    # satisfy a generic recipe alternative such as "chicken".
-                    normalized_user, _ = normalize_recipe_ingredient(user_name)
-                    if normalized_user:
-                        user_name = normalized_user
-
-                    user_name = ingredient_alias(user_name)
-                    user_name = clean_word(user_name)
-
-                    if not user_name:
-                        continue
-
-                    # Resolve the pantry core before any direct/core shortcut.
-                    user_core = find_core(user_name)
-
-                    # OR meat alternatives must obey the authoritative meat
-                    # hierarchy instead of falling through to broad core matching.
-                    # Generic recipe meat may NOT be satisfied by a specific
-                    # pantry cut; a generic pantry meat MAY satisfy a specific
-                    # recipe cut. Ground meat remains separate from whole/cut meat.
-                    or_meat_cores = {"beef", "chicken", "pork", "turkey", "lamb"}
-
-                    if alternative_core in or_meat_cores or user_core in or_meat_cores:
-                        if alternative_core != user_core:
-                            continue
-
-                        recipe_is_ground = (
-                            alternative_clean in {
-                                "ground beef", "ground chicken", "ground pork",
-                                "ground turkey", "ground lamb"
-                            }
-                            or alternative_clean.startswith("ground ")
-                        )
-                        user_is_ground = (
-                            user_name in {
-                                "ground beef", "ground chicken", "ground pork",
-                                "ground turkey", "ground lamb"
-                            }
-                            or user_name.startswith("ground ")
-                        )
-
-                        if recipe_is_ground != user_is_ground:
-                            continue
-
-                        # Generic recipe meat cannot accept a specific pantry cut.
-                        if alternative_clean == alternative_core and user_name != user_core:
-                            continue
-
-                        # Generic pantry meat can satisfy a specific recipe cut.
-                        if alternative_clean != alternative_core and user_name == user_core:
-                            return True
-
-                        # Exact same meat item is valid.
-                        if alternative_clean == user_name:
-                            return True
-
-                        # Same-family specific cuts cannot substitute for one another.
-                        continue
-
-                    # Direct or singular/plural match.
-                    if (
-                        alternative_clean == user_name
-                        or singular(alternative_clean) == singular(user_name)
-                    ):
-                        return True
-
-                    # Core ingredient match.
-                    if (
-                        alternative_core
-                        and user_core
-                        and alternative_core == user_core
-                    ):
-                        return True
-
-                    # Universal parent/core fallback for descriptive variants.
-                    # This deliberately requires both sides to resolve to the
-                    # same known core ingredient, preventing cross-meat matches.
-                    if alternative_core and user_core:
-                        if alternative_core == user_core:
-                            return True
+        # The recipe explicitly used OR alternatives. If none matched,
+        # do not fall through into ordinary single-ingredient matching.
+        return False
 
     # -----------------------------------------------------
     # MEAT LOOKUP
@@ -1778,6 +1790,16 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         if not name:
             return False
 
+        excluded_steak_products = {
+            "steak sauce",
+            "steak seasoning",
+            "steak seasoning mix",
+            "steak rub",
+            "steak marinade",
+        }
+        if name in excluded_steak_products:
+            return False
+
         if is_ground_meat(name):
             return False
 
@@ -1800,6 +1822,11 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             "skirt steak",
         )
 
+        # Recognize descriptive steak wording universally.
+        # Examples: lean steaks, NY steaks, breakfast steak.
+        if re.search(r"\bsteaks?\b", name):
+            return True
+
         return any(term in name for term in steak_phrases)
 
     meat_lookup = {}
@@ -1818,6 +1845,28 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         "ground turkey": "turkey",
         "ground lamb": "lamb",
     })
+
+    def resolve_meat_parent(name):
+        """Resolve an exact meat variant or descriptive steak to its animal parent."""
+        name = clean_word(name)
+        if not name:
+            return None
+
+        name = ingredient_alias(name)
+        name = clean_word(name)
+        if not name:
+            return None
+
+        direct = meat_lookup.get(name)
+        if direct:
+            return direct
+
+        # Descriptive steak wording belongs to the beef parent.
+        # Ground meat remains excluded by is_steak_cut().
+        if is_steak_cut(name):
+            return "beef"
+
+        return None
 
     # -----------------------------------------------------
     # NORMAL CORE INGREDIENT MATCHING
@@ -1907,7 +1956,34 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             if recipe_core == "pepper" and user_core == "pepper":
                 continue
 
-            if user_core and recipe_core == user_core:
+            # Plant-Based/Vegan pantry products must not satisfy
+            # unqualified animal ingredients through broad core matching.
+            # They may only match another explicitly Plant-Based/Vegan
+            # recipe ingredient at this stage.
+            plant_based_recipe = bool(
+                re.search(r"\bvegan\b", recipe_name)
+                or re.search(r"\bplant\s+based\b", recipe_name)
+            )
+            plant_based_user = bool(
+                re.search(r"\bvegan\b", user_name)
+                or re.search(r"\bplant\s+based\b", user_name)
+            )
+
+            animal_core_names = {
+                "beef",
+                "chicken",
+                "pork",
+                "turkey",
+                "lamb",
+            }
+
+            if (
+                plant_based_user
+                and not plant_based_recipe
+                and recipe_core in animal_core_names
+            ):
+                continue
+
                 return True
 
     # -----------------------------------------------------
@@ -2122,7 +2198,7 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
     # animal, but ground meat remains separate from whole cuts.
     # -----------------------------------------------------
 
-    recipe_parent = meat_lookup.get(recipe_name)
+    recipe_parent = resolve_meat_parent(recipe_name)
 
     # -----------------------------------------------------
     # AUTHORITATIVE MEAT HIERARCHY MATCHING
@@ -2147,7 +2223,7 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             if not user_name:
                 continue
 
-            user_parent = meat_lookup.get(user_name)
+            user_parent = resolve_meat_parent(user_name)
             if not user_parent:
                 continue
 
@@ -2175,6 +2251,17 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             ):
                 return True
 
+            # User-facing "beef steak" means any non-ground beef steak cut.
+            # Keep the direction intentional: a steak pantry selection can
+            # satisfy a specific steak recipe, but a specific pantry cut
+            # cannot satisfy a generic "beef steak" recipe.
+            if (
+                recipe_parent == "beef"
+                and user_name == "beef steak"
+                and is_steak_cut(recipe_name)
+            ):
+                return True
+
             # Generic recipe steak accepts any specific beef steak cut.
             # This is narrower than generic beef -> specific cut matching.
             if recipe_name == "steak" and recipe_parent == "beef":
@@ -2199,6 +2286,61 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
 
         if not user_name:
             continue
+
+        # -----------------------------------------------------
+        # PLANT-BASED EQUIVALENCE
+        # -----------------------------------------------------
+        # Vegan and plant-based versions of the same product are
+        # compatible with each other, but remain completely separate
+        # from ordinary animal ingredients.
+        # -----------------------------------------------------
+        # -----------------------------------------------------
+        # UNIVERSAL PLANT-BASED PRODUCT FAMILY MATCHING
+        # -----------------------------------------------------
+        # Vegan and plant-based versions of the same product may
+        # satisfy each other. Do not treat shared animal/product words
+        # as a match when the recipe is actually a different product
+        # such as broth, stock, seasoning, or sauce.
+        # -----------------------------------------------------
+        def plant_based_product_key(name):
+            name = clean_word(name)
+            if not name:
+                return None
+
+            is_plant_based = bool(
+                re.search(r"\bvegan\b", name)
+                or re.search(r"\bplant\s+based\b", name)
+            )
+
+            if not is_plant_based:
+                return None
+
+            key = re.sub(r"\bvegan\b", " ", name)
+            key = re.sub(r"\bplant\s+based\b", " ", key)
+
+            # Product-form words may describe the same plant-based
+            # product without changing its identity.
+            key = re.sub(
+                r"\b(filet|filets|fillet|fillets|patty|patties|burger|burgers)\b",
+                " ",
+                key,
+            )
+
+            key = re.sub(r"\s+", " ", key).strip()
+            return key or None
+
+        recipe_plant_key = plant_based_product_key(recipe_name)
+        user_plant_key = plant_based_product_key(user_name)
+
+        if recipe_plant_key and user_plant_key:
+            if recipe_plant_key == user_plant_key:
+                return True
+
+            # Both sides are explicitly Vegan/Plant-Based, but they
+            # are different products. Do not let older generic matching
+            # rules collapse them together.
+            continue
+
 
         # -----------------------------------------------------
         # UNIVERSAL MEAT HIERARCHY PROTECTION
@@ -2389,6 +2531,23 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         if recipe_core == "oil" and len(compound_component_cores) == 0:
             if "olive oil" not in recipe_name:
                 continue
+
+        # -----------------------------------------------------
+        # PLANT-BASED EQUIVALENCE
+        # -----------------------------------------------------
+        # Plant-based and vegan versions of the same substitute
+        # protein/product are interchangeable with each other.
+        # They must remain completely separate from the animal
+        # ingredient families above.
+        # -----------------------------------------------------
+        plant_based_pairs = {
+            frozenset(("plant-based chicken", "vegan chicken")),
+            frozenset(("plant-based beef", "vegan beef")),
+            frozenset(("plant-based sausage", "vegan sausage")),
+        }
+
+        if frozenset((recipe_name, user_name)) in plant_based_pairs:
+            return True
 
         if recipe_core and user_core and recipe_core == user_core:
             # Meat-specific matching above must remain authoritative:
@@ -2865,140 +3024,128 @@ def search_web_recipes(user_ingredients, count=10):
     if not ingredients:
         return []
 
-    query = " ".join(ingredients) + " recipe"
+    # Keep the original full-pantry search, but diversify candidate retrieval
+    # when multiple proteins are selected. The full query preserves the existing
+    # behavior, while protein-specific queries ensure each selected protein can
+    # contribute recipes to the candidate pool.
+    queries = [" ".join(ingredients) + " recipe"]
 
-    try:
-        response = requests.get(
-            BRAVE_SEARCH_URL,
-            params={
-                "q": query,
-                "count": max(count, 20)
-            },
-            headers={
-                "X-Subscription-Token": BRAVE_API_KEY,
-                "Accept": "application/json"
-            },
-            timeout=10
-        )
-
-        if response.status_code != 200:
-            print(
-                "Brave API response:",
-                response.status_code,
-                response.text
-            )
-            response.raise_for_status()
-
-        data = response.json()
-
-        results = data.get(
-            "web",
-            {}
-        ).get(
-            "results",
-            []
-        )
-
-        recipes = []
-
-        for result in results:
-
-            title = result.get(
-                "title",
-                ""
-            ).strip()
-
-            url = result.get(
-                "url",
-                ""
-            ).strip()
-
-            description = result.get(
-                "description",
-                ""
-            ).strip()
-
-            if not title or not url:
-                continue
-
-            # Try to extract the actual recipe from the page.
-            # Some websites may block the request or may not
-            # contain Recipe Schema. Those results are skipped
-            # rather than being returned as empty recipes.
-
-            recipe = extract_web_recipe(url)
-
-            if not recipe:
-                print(
-                    "Skipping search result - "
-                    "recipe could not be extracted:",
-                    url
-                )
-                continue
-
-            # Make sure the extracted recipe has the
-            # information our matching engine needs.
-
-            if not recipe.get("name"):
-                recipe["name"] = title
-
-            if not recipe.get("ingredients"):
-                print(
-                    "Skipping search result - "
-                    "no ingredients found:",
-                    url
-                )
-                continue
-
-            # UNIVERSAL RECIPE INGREDIENT CLEANUP
-            # Normalize the ingredient identity as soon as recipe data
-            # comes off the internet. Measurements, sizes, preparation
-            # wording, and recipe-site metadata are not pantry identity.
-            cleaned_ingredients = []
-
-            for raw_ingredient in recipe.get("ingredients", []):
-                if not isinstance(raw_ingredient, str):
-                    continue
-
-                normalized, alternatives = normalize_recipe_ingredient(
-                    raw_ingredient
-                )
-
-                if not normalized:
-                    continue
-
-                if alternatives:
-                    normalized = (
-                        normalized
-                        + " or "
-                        + " or ".join(
-                            alt.strip()
-                            for alt in alternatives
-                            if alt.strip()
-                        )
-                    ).strip()
-
-                cleaned_ingredients.append(normalized)
-
-            recipe["ingredients"] = cleaned_ingredients
-
-            if not recipe.get("ingredients"):
-                print(
-                    "Skipping search result - "
-                    "no usable ingredients found:",
-                    url
-                )
-                continue
-
-            if not recipe.get("description"):
-                recipe["description"] = description
-
-            recipes.append(recipe)
-
-            if len(recipes) >= count:
+    selected_protein_terms = []
+    for item in ingredients:
+        for meat_options in MEAT_GROUPS.values():
+            if item in meat_options:
+                selected_protein_terms.append(item)
                 break
 
-        return recipes
+    if len(selected_protein_terms) > 1:
+        for protein in selected_protein_terms:
+            protein_query = protein + " recipe"
+            if protein_query not in queries:
+                queries.append(protein_query)
+
+    try:
+        results = []
+        seen_urls = set()
+
+        for query in queries:
+            print("BRAVE SEARCH QUERY:", query)
+            response = requests.get(
+                BRAVE_SEARCH_URL,
+                params={
+                    "q": query,
+                    "count": max(count, 20)
+                },
+                headers={
+                    "X-Subscription-Token": BRAVE_API_KEY,
+                    "Accept": "application/json"
+                },
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                print(
+                    "Brave API response:",
+                    response.status_code,
+                    response.text
+                )
+                response.raise_for_status()
+
+            data = response.json()
+            web_results = data.get("web", {}).get("results", [])
+
+            for result in web_results:
+                title = result.get("title", "").strip()
+                url = result.get("url", "").strip()
+                description = result.get("description", "").strip()
+
+                if not title or not url or url in seen_urls:
+                    continue
+
+                recipe = extract_web_recipe(url)
+
+                if not recipe:
+                    print(
+                        "Skipping search result - recipe could not be extracted:",
+                        url
+                    )
+                    continue
+
+                if not recipe.get("name"):
+                    recipe["name"] = title
+
+                if not recipe.get("ingredients"):
+                    print(
+                        "Skipping search result - no ingredients found:",
+                        url
+                    )
+                    continue
+
+                # UNIVERSAL RECIPE INGREDIENT CLEANUP
+                cleaned_ingredients = []
+
+                for raw_ingredient in recipe.get("ingredients", []):
+                    if not isinstance(raw_ingredient, str):
+                        continue
+
+                    normalized, alternatives = normalize_recipe_ingredient(
+                        raw_ingredient
+                    )
+
+                    if not normalized:
+                        continue
+
+                    if alternatives:
+                        normalized = (
+                            normalized
+                            + " or "
+                            + " or ".join(
+                                alt.strip()
+                                for alt in alternatives
+                                if alt.strip()
+                            )
+                        ).strip()
+
+                    cleaned_ingredients.append(normalized)
+
+                recipe["ingredients"] = cleaned_ingredients
+
+                if not recipe.get("ingredients"):
+                    print(
+                        "Skipping search result - no usable ingredients found:",
+                        url
+                    )
+                    continue
+
+                if not recipe.get("description"):
+                    recipe["description"] = description
+
+                seen_urls.add(url)
+                results.append(recipe)
+
+                if len(results) >= count:
+                    break
+
+        return results
 
     except requests.HTTPError as e:
         print(
@@ -3013,29 +3160,6 @@ def search_web_recipes(user_ingredients, count=10):
             e
         )
         return []
-
-    except ValueError as e:
-        print(
-            "Brave web search JSON error:",
-            e
-        )
-        return []
-
-# ---------------------------------------------------------
-# EXTRACT RECIPE FROM WEB PAGE
-# Reads standard Recipe Schema data from recipe websites.
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# EXTRACT RECIPE FROM WEB PAGE
-# Reads standard Recipe Schema data from recipe websites.
-# ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# NORMALIZE RECIPE INGREDIENT
-# Converts recipe ingredient text into a simpler ingredient
-# name while preserving alternatives separately.
-# ---------------------------------------------------------
 
 def extract_known_ingredient(text):
     # Extract the actual known ingredient while ignoring surrounding
@@ -3210,6 +3334,18 @@ def normalize_recipe_ingredient(text):
     # 'chicken broth (or water)'
     alternatives = re.findall(r'\bor\s+([^()]+)', text)
 
+    # When an alternative follows a comma, keep it in  and
+    # remove it from the primary ingredient text before known-ingredient
+    # extraction. This prevents duplicate identities such as:
+    # "Lucini olive oil, or any high quality olive oil"
+    # becoming "lucini olive oil olive oil".
+    text = re.sub(
+        r'\s*,\s*or\s+.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
     # Preserve comma-separated OR lists with a shared ingredient tail.
     # Example:
     #   "red, green, or orange red peppers"
@@ -3325,6 +3461,16 @@ def normalize_recipe_ingredient(text):
     # Reduce descriptive meat preparation wording to the actual cut.
     text = re.sub(r'\bcenter\s+cut\s+(pork\s+loin)\b.*', r'\1', text)
 
+    # Remove trailing bone/skin preparation wording after the ingredient identity.
+    # Examples: "chicken breasts, bone and skin on" -> "chicken breasts"
+    #           "chicken breast, skin and bone on" -> "chicken breast"
+    text = re.sub(
+        r'\s*,?\s*(?:bone|skin)\s+and\s+(?:skin|bone)\s+on\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
     # Remove preparation descriptors.
     text = re.sub(r'\bstems?\s+removed\b', ' ', text)
 
@@ -3349,7 +3495,7 @@ def normalize_recipe_ingredient(text):
 
 
     text = re.sub(
-        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|leaf|leaves|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein)\b',
+        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|leaf|leaves|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
         ' ',
         text,
         flags=re.IGNORECASE
@@ -3405,6 +3551,45 @@ def normalize_recipe_ingredient(text):
     # Keep letters and spaces.
     text = re.sub(r'[^a-z\s]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
+
+    # Remove stray source-artifact markers that appear as a leading x.
+    # Examples: "x chicken breasts" -> "chicken breasts".
+    text = re.sub(r'^x\s+', '', text, flags=re.IGNORECASE)
+
+    # Remove trailing recipe-site metadata that is not ingredient identity.
+    # Examples:
+    #   "olive oil split" -> "olive oil"
+    #   "baby bella mushrooms quartered long ways" -> "baby bella mushrooms"
+    #   "flour option use a gluten free flour" -> "flour"
+    text = re.sub(
+        r'\s+\bsplit\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r'\s+\bquartered\s+long\s+ways?\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r'\s+\boption\s+use\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # Remove trailing recipe-site wording such as 'with the tip a'.
+    # This is metadata, not part of the ingredient identity.
+    text = re.sub(
+        r'\s+\bwith\s+the\s+tip\s+a\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
 
     # Preparation/connective words cannot be standalone ingredients.
     if text in {
@@ -3643,6 +3828,34 @@ def extract_web_recipe(url):
                         "suitableForDiet",
                         ""
                     )
+                ),
+                "nutrition": item.get(
+                    "nutrition",
+                    {}
+                ),
+                "recipeYield": item.get(
+                    "recipeYield",
+                    ""
+                ),
+                "prepTime": item.get(
+                    "prepTime",
+                    ""
+                ),
+                "cookTime": item.get(
+                    "cookTime",
+                    ""
+                ),
+                "totalTime": item.get(
+                    "totalTime",
+                    ""
+                ),
+                "recipeCategory": item.get(
+                    "recipeCategory",
+                    ""
+                ),
+                "keywords": item.get(
+                    "keywords",
+                    ""
                 )
             }
 
@@ -3845,6 +4058,53 @@ def get_recipe(meal_id):
 # ---------------------------------------------------------
 # GET RECIPE INGREDIENTS
 # ---------------------------------------------------------
+def format_recipe_time(value):
+    """Convert an ISO 8601 recipe duration into readable text."""
+    if not value:
+        return ""
+
+    text = str(value).strip().upper()
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", text)
+    if not match:
+        return str(value)
+
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour" + ("s" if hours != 1 else ""))
+    if minutes:
+        parts.append(f"{minutes} minute" + ("s" if minutes != 1 else ""))
+    if seconds and not parts:
+        parts.append(f"{seconds} second" + ("s" if seconds != 1 else ""))
+
+    return " ".join(parts) if parts else "0 minutes"
+
+
+def format_recipe_yield(value):
+    """Convert recipeYield data into a clean user-facing serving string."""
+    if not value:
+        return ""
+
+    if isinstance(value, list):
+        values = [str(item).strip() for item in value if str(item).strip()]
+        if not values:
+            return ""
+
+        serving_value = next(
+            (item for item in values if re.search(r"\bservings?\b", item, re.IGNORECASE)),
+            None,
+        )
+        value = serving_value or values[-1]
+
+    text = str(value).strip()
+    text = re.sub(r"\b(\d+)\s*serving\(s\)", r"\1 servings", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\d+)\s+serving\b", r"\1 serving", text, flags=re.IGNORECASE)
+    return text
+
+
 def convert_measurement(measure):
     if not measure:
         return ""
@@ -4071,7 +4331,6 @@ def get_substitution_notes(missing_ingredients):
     notes = {}
 
     for ingredient in missing_ingredients:
-
         cleaned = ingredient_alias(ingredient)
 
         if cleaned not in SUBSTITUTION_NOTES:
@@ -4087,6 +4346,215 @@ def get_substitution_notes(missing_ingredients):
             notes[ingredient] = note_data
 
     return notes
+
+
+def fancy_recipe_check(recipe):
+    """Return True when recipe metadata strongly suggests an elevated,
+    special-occasion, entertaining, or gourmet recipe."""
+    parts = []
+
+    for field in (
+        "name",
+        "description",
+        "recipeCategory",
+        "keywords",
+    ):
+        value = recipe.get(field, "")
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+
+    text = " ".join(parts).lower()
+    text = re.sub(r"[^a-z0-9\s-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    positive_phrases = {
+        "gourmet",
+        "elegant",
+        "upscale",
+        "special occasion",
+        "special-occasion",
+        "dinner party",
+        "entertaining",
+        "celebration",
+        "holiday",
+        "date night",
+        "restaurant style",
+        "restaurant-style",
+        "fine dining",
+        "impressive",
+        "showstopper",
+    }
+
+    negative_phrases = {
+        "easy",
+        "simple",
+        "quick",
+        "weeknight",
+        "family",
+        "15-minute",
+        "20-minute",
+        "30-minute",
+        "one-pot",
+        "one pot",
+    }
+
+    strong_positive_phrases = {
+        "gourmet",
+        "elegant",
+        "upscale",
+        "fine dining",
+        "showstopper",
+        "restaurant style",
+        "restaurant-style",
+    }
+
+    positive_hits = sum(1 for phrase in positive_phrases if phrase in text)
+    negative_hits = sum(1 for phrase in negative_phrases if phrase in text)
+    strong_positive_hits = sum(
+        1 for phrase in strong_positive_phrases if phrase in text
+    )
+
+    if strong_positive_hits >= 1:
+        return True
+
+    return positive_hits >= 1 and positive_hits > negative_hits
+
+
+def quick_recipe_check(recipe):
+    """Return True only when usable total recipe time is 30 minutes or less."""
+    total_time = recipe.get("totalTime", "")
+
+    if not total_time:
+        return False
+
+    match = re.fullmatch(
+        r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?",
+        str(total_time).strip().upper()
+    )
+    if not match:
+        return False
+
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+
+    total_minutes = hours * 60 + minutes + (seconds / 60)
+    return total_minutes <= 30
+
+
+def healthy_recipe_check(recipe):
+    """Return True only when usable per-serving nutrition meets
+    InThePantry's Healthy screening criteria."""
+    nutrition = recipe.get("nutrition", {})
+
+    if not isinstance(nutrition, dict):
+        return False
+
+    def number(field):
+        value = nutrition.get(field)
+        if value is None:
+            return None
+        match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except (TypeError, ValueError):
+            return None
+
+    calories = number("calories")
+    fat = number("fatContent")
+    saturated_fat = number("saturatedFatContent")
+    sodium = number("sodiumContent")
+
+    if any(value is None for value in (calories, fat, saturated_fat, sodium)):
+        return False
+
+    if calories <= 0 or fat < 0 or saturated_fat < 0 or sodium < 0:
+        return False
+
+    return (
+        calories <= 500
+        and fat <= 20
+        and saturated_fat <= 8
+        and sodium <= 800
+    )
+
+
+def recipe_cuisine_matches(recipe, selected_cuisine):
+    """Return True when recipe evidence supports the selected cuisine."""
+    if not selected_cuisine:
+        return False
+
+    selected = str(selected_cuisine).strip().lower()
+
+    cuisine_aliases = {
+        "italian": {"italian", "italian cuisine"},
+        "american": {"american", "american cuisine"},
+        "middle eastern": {
+            "middle eastern",
+            "middle-eastern",
+            "middle eastern cuisine",
+        },
+        "mexican": {"mexican", "mexican cuisine"},
+    }
+
+    accepted = cuisine_aliases.get(selected, {selected})
+
+    raw_cuisine = recipe.get("recipeCuisine", "")
+    cuisine_values = (
+        raw_cuisine
+        if isinstance(raw_cuisine, list)
+        else [raw_cuisine]
+    )
+
+    cuisine_values = [
+        str(value).strip().lower()
+        for value in cuisine_values
+        if str(value).strip()
+    ]
+
+    # Explicit cuisine metadata is authoritative.
+    if cuisine_values:
+        return any(
+            value in accepted
+            or any(
+                part.strip() in accepted
+                for part in re.split(r"[/,;|]", value)
+            )
+            for value in cuisine_values
+        )
+
+    # When recipeCuisine is absent, use secondary recipe evidence.
+    parts = []
+
+    for field in (
+        "name",
+        "recipeCategory",
+        "keywords",
+        "description",
+    ):
+        value = recipe.get(field, "")
+
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+
+    evidence = " ".join(parts).lower()
+    evidence = re.sub(r"[^a-z0-9\s-]", " ", evidence)
+    evidence = re.sub(r"\s+", " ", evidence).strip()
+
+    return any(
+        re.search(
+            r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])",
+            evidence,
+        )
+        for alias in accepted
+    )
+
 
 def find_recipes(
     user_ingredients,
@@ -4146,6 +4614,110 @@ def find_recipes(
         if not recipe:
             continue
 
+        # -----------------------------------------------------
+        # HARD HEALTHY DIET FILTER
+        # -----------------------------------------------------
+        # Healthy is a true eligibility filter. A recipe must have
+        # usable nutrition data and satisfy the application's
+        # Healthy screening criteria before it can be returned when
+        # Healthy is selected.
+        # -----------------------------------------------------
+        if selected_diet == "healthy":
+            if not healthy_recipe_check(recipe):
+                continue
+
+        # -----------------------------------------------------
+        # HARD QUICK DIET FILTER
+        # -----------------------------------------------------
+        # Quick is a true eligibility filter. A recipe must have
+        # usable total-time data and require 30 minutes or less.
+        # -----------------------------------------------------
+        if selected_diet == "quick":
+            if not quick_recipe_check(recipe):
+                continue
+
+        # -----------------------------------------------------
+        # HARD VEGAN DIET FILTER
+        # -----------------------------------------------------
+        # Vegan is a true eligibility filter. Explicit vegan
+        # metadata qualifies the recipe immediately. Otherwise,
+        # inspect the recipe ingredients using the application's
+        # existing ingredient vocabulary and reject recipes that
+        # contain recognized animal-derived ingredients.
+        #
+        # This keeps Vegan filtering independent from pantry
+        # matching while avoiding reliance on incomplete web
+        # recipe diet metadata.
+        # -----------------------------------------------------
+        if selected_diet == "vegan":
+            recipe_diets = recipe.get(
+                "suitableForDiet",
+                []
+            )
+
+            if isinstance(recipe_diets, str):
+                recipe_diets = [recipe_diets]
+
+            is_explicitly_vegan = any(
+                str(diet).strip().lower() == "vegan"
+                for diet in recipe_diets
+            )
+
+            if not is_explicitly_vegan:
+                non_vegan_ingredients = set()
+
+                for raw_ingredient in recipe.get("ingredients", []):
+                    ingredient_name = clean_word(raw_ingredient)
+                    if not ingredient_name:
+                        continue
+
+                    normalized_name, _ = normalize_recipe_ingredient(
+                        ingredient_name
+                    )
+                    normalized_name = ingredient_alias(
+                        clean_word(normalized_name)
+                    )
+
+                    if not normalized_name:
+                        continue
+
+                    # Explicit vegan ingredients are safe.
+                    if re.search(r"\bvegan\b", normalized_name):
+                        continue
+
+                    # Use the existing application vocabulary for
+                    # recognized animal-derived ingredients.
+                    animal_ingredients = set()
+                    for values in MEAT_GROUPS.values():
+                        animal_ingredients.update(values)
+                    animal_ingredients.update([
+                        "chicken",
+                        "beef",
+                        "pork",
+                        "lamb",
+                        "turkey",
+                        "fish",
+                        "seafood",
+                        "eggs",
+                        "egg",
+                        "milk",
+                        "cheese",
+                        "butter",
+                    ])
+
+                    animal_match = any(
+                        normalized_name == animal
+                        or normalized_name.startswith(animal + " ")
+                        or (" " + animal + " ") in (" " + normalized_name + " ")
+                        for animal in animal_ingredients
+                    )
+
+                    if animal_match:
+                        non_vegan_ingredients.add(normalized_name)
+
+                if non_vegan_ingredients:
+                    continue
+
         recipe_ingredients = recipe.get(
             "ingredients",
             []
@@ -4155,10 +4727,49 @@ def find_recipes(
             continue
 
         # Compare the recipe with the user's pantry.
+        #
+        # When Vegan is selected, ordinary animal meat/poultry in
+        # the pantry is irrelevant to the vegan recipe match. Do not
+        # let those incompatible pantry proteins count as missing or
+        # otherwise affect the recipe's pantry matching.
+        matching_pantry = list(user_ingredients or [])
+
+        if selected_diet == "vegan":
+            animal_pantry_items = {
+                "chicken",
+                "beef",
+                "pork",
+                "lamb",
+                "turkey",
+            }
+
+            animal_pantry_items.update(
+                item
+                for values in MEAT_GROUPS.values()
+                for item in values
+            )
+
+            filtered_pantry = []
+
+            for pantry_item in matching_pantry:
+                normalized_pantry, _ = normalize_recipe_ingredient(
+                    pantry_item
+                )
+                normalized_pantry = ingredient_alias(
+                    clean_word(normalized_pantry)
+                )
+
+                if normalized_pantry in animal_pantry_items:
+                    continue
+
+                filtered_pantry.append(pantry_item)
+
+            matching_pantry = filtered_pantry
+
         try:
             pantry_result = match_recipe_to_pantry(
                 recipe,
-                user_ingredients
+                matching_pantry
             )
         except Exception as e:
             print("Pantry matching error:", e)
@@ -4279,6 +4890,30 @@ def find_recipes(
                 )
             ),
 
+            "healthy": healthy_recipe_check(recipe),
+            "quick": quick_recipe_check(recipe),
+            "fancy": fancy_recipe_check(recipe),
+            "prepTime": recipe.get(
+                "prepTime",
+                ""
+            ),
+            "cookTime": recipe.get(
+                "cookTime",
+                ""
+            ),
+            "totalTime": recipe.get(
+                "totalTime",
+                ""
+            ),
+            "nutrition": recipe.get(
+                "nutrition",
+                {}
+            ),
+            "recipeYield": recipe.get(
+                "recipeYield",
+                ""
+            ),
+
             "image": image,
 
             "ingredients": recipe_ingredients,
@@ -4308,43 +4943,41 @@ def find_recipes(
                 for item in matched
             ) else 0,
 
+            "recipeCuisine": recipe.get(
+                "recipeCuisine",
+                []
+            ),
+
             "cuisine_match": (
                 1
-                if selected_cuisine
-                and any(
-                    selected_cuisine.lower()
-                    == str(cuisine).strip().lower()
-                    for cuisine in recipe.get(
-                        "recipeCuisine",
-                        []
-                    )
-                )
+                if recipe_cuisine_matches(recipe, selected_cuisine)
                 else 0
             ),
 
             "diet_match": (
                 1
-                if selected_diet == "vegan"
-                and any(
-                    str(diet).strip().lower() == "vegan"
-                    for diet in recipe.get(
-                        "suitableForDiet",
-                        []
-                    )
+                if (
+                    (selected_diet == "vegan")
+                    or (selected_diet == "healthy" and healthy_recipe_check(recipe))
+                    or (selected_diet == "quick" and quick_recipe_check(recipe))
+                    or (selected_diet == "fancy" and fancy_recipe_check(recipe))
                 )
                 else 0
             ),
-
             "instructions": instructions,
 
             "source": url
         })
 
-    # Highest pantry match first.
-    # If tied, prefer the recipe using more
-    # ingredients the user already has.
+    # When both a cuisine and diet/style are selected, prefer recipes
+    # that satisfy both. Otherwise preserve the existing preference order.
     scored_recipes.sort(
         key=lambda x: (
+            (
+                1
+                if x["diet_match"] and x["cuisine_match"]
+                else 0
+            ),
             x["diet_match"],
             x["cuisine_match"],
             x["primary_match"],
@@ -4433,7 +5066,7 @@ HTML = """
 }
         body {
             font-family: Arial, sans-serif;
-            background: #f5f5f5;
+            background: #f7f3ed;
             margin: 0;
             padding: 20px;
         }
@@ -4445,12 +5078,21 @@ HTML = """
 
         h1 {
             text-align: center;
-            color: #333;
+            color: #355e3b;
         }
 
         .subtitle {
             text-align: center;
             color: #666;
+            margin-bottom: 6px;
+        }
+
+        .tagline {
+            text-align: center;
+            color: #355e3b;
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 24px;
         }
 
         form {
@@ -4497,11 +5139,11 @@ HTML = """
 .ingredient-category {
     width: 100%;
     margin: 12px 0 6px;
-    padding: 14px 16px;
-    border: 1px solid #ddd;
+    padding: 15px 17px;
+    border: 1px solid #d8dfd5;
     border-radius: 10px;
-    background: #f5f5f5;
-    color: #333;
+    background: #fffdf9;
+    color: #355e3b;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -4509,10 +5151,12 @@ HTML = """
     font-weight: bold;
     cursor: pointer;
     text-align: left;
+    transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .ingredient-category:hover {
-    background: #eef6df;
+    background: #f3f8ee;
+    border-color: #b9cdb8;
 }
 
 .category-arrow {
@@ -4550,6 +5194,18 @@ HTML = """
 }
 
 @media (max-width: 600px) {
+    body {
+        padding: 12px;
+    }
+
+    .container {
+        max-width: 100%;
+    }
+
+    form {
+        padding: 16px;
+    }
+
     .ingredient-grid {
         grid-template-columns: 1fr;
     }
@@ -4681,7 +5337,55 @@ HTML = """
             color: #b00020;
         }
 
-    </style>
+    
+    .sound-control {
+        display: flex;
+        justify-content: center;
+        margin: 0 0 18px;
+    }
+
+    .sound-toggle {
+        width: auto;
+        padding: 9px 16px;
+        background: #fffdf9;
+        color: #355e3b;
+        border: 1px solid #d8dfd5;
+        border-radius: 999px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .sound-toggle:hover {
+        background: #f3f8ee;
+        border-color: #b9cdb8;
+    }
+
+    .sound-toggle.active {
+        background: #355e3b;
+        color: white;
+        border-color: #355e3b;
+    }
+
+    .music-note {
+        margin-top: 8px;
+        text-align: center;
+        font-size: 12px;
+        color: #777;
+    }
+
+    .music-note a {
+        color: #355e3b;
+        text-decoration: none;
+        font-weight: 600;
+    }
+
+    .music-note a:hover {
+        text-decoration: underline;
+    }
+
+</style>
 
 <script>
 
@@ -4877,6 +5581,182 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 });
 </script>
+
+<script>
+async function toggleKitchenMusic() {
+    const audio = document.getElementById("kitchen-music");
+    const button = document.getElementById("sound-toggle");
+
+    if (!audio || !button) {
+        return;
+    }
+
+    if (audio.paused) {
+        audio.volume = 0.15;
+
+        try {
+            await audio.play();
+        } catch (error) {
+            return;
+        }
+
+        button.setAttribute("aria-pressed", "true");
+        button.classList.add("active");
+        button.textContent = "🔊 Kitchen Music";
+
+        localStorage.setItem(
+            "inThePantryKitchenSound",
+            "on"
+        );
+    } else {
+        audio.pause();
+
+        button.setAttribute("aria-pressed", "false");
+        button.classList.remove("active");
+        button.textContent = "🔇 Kitchen Music";
+
+        localStorage.setItem(
+            "inThePantryKitchenSound",
+            "off"
+        );
+    }
+}
+
+function updateKitchenMusicButton() {
+    const audio = document.getElementById("kitchen-music");
+    const button = document.getElementById("sound-toggle");
+
+    if (!audio || !button) {
+        return;
+    }
+
+    if (audio.paused) {
+        button.setAttribute("aria-pressed", "false");
+        button.classList.remove("active");
+        button.textContent = "🔇 Kitchen Music";
+    } else {
+        button.setAttribute("aria-pressed", "true");
+        button.classList.add("active");
+        button.textContent = "🔊 Kitchen Music";
+    }
+}
+
+function initializeRecipeSearch() {
+    const form = document.querySelector("form");
+
+    if (!form || form.dataset.musicSearchBound === "true") {
+        return;
+    }
+
+    form.dataset.musicSearchBound = "true";
+
+    form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+
+        const button = form.querySelector('button[type="submit"]');
+
+        if (button) {
+            button.disabled = true;
+            button.textContent = "Finding Your Recipes... 🍳";
+        }
+
+        try {
+            const response = await fetch(
+                form.action || window.location.href,
+                {
+                    method: "POST",
+                    body: new FormData(form),
+                    headers: {
+                        "X-Requested-With": "XMLHttpRequest"
+                    }
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error("Recipe search failed.");
+            }
+
+            const html = await response.text();
+            const parser = new DOMParser();
+            const newDocument = parser.parseFromString(
+                html,
+                "text/html"
+            );
+
+            const newForm = newDocument.querySelector("form");
+
+            if (!newForm) {
+                throw new Error("Recipe results could not be loaded.");
+            }
+
+            const currentForm = document.querySelector("form");
+
+            if (!currentForm) {
+                throw new Error("Current recipe form could not be found.");
+            }
+
+            const replacementForm = newForm.cloneNode(true);
+            const resultsFragment =
+                document.createDocumentFragment();
+
+            let newNode = newForm.nextSibling;
+
+            while (newNode) {
+                resultsFragment.appendChild(
+                    newNode.cloneNode(true)
+                );
+                newNode = newNode.nextSibling;
+            }
+
+            currentForm.replaceWith(replacementForm);
+
+            let oldNode = replacementForm.nextSibling;
+
+            while (oldNode) {
+                const nextNode = oldNode.nextSibling;
+                oldNode.remove();
+                oldNode = nextNode;
+            }
+
+            replacementForm.after(resultsFragment);
+
+            initializeRecipeSearch();
+
+            if (typeof showRecipePage === "function" &&
+                document.querySelectorAll(".recipe").length > 0) {
+                showRecipePage(0);
+            }
+
+            updateKitchenMusicButton();
+
+            window.scrollTo({
+                top: 0,
+                behavior: "smooth"
+            });
+
+        } catch (error) {
+            console.error(error);
+            alert(
+                "Sorry, there was a problem finding your recipes. Please try again."
+            );
+
+            const currentButton =
+                document.querySelector('form button[type="submit"]');
+
+            if (currentButton) {
+                currentButton.disabled = false;
+                currentButton.textContent = "Find My Recipes";
+            }
+        }
+    });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    updateKitchenMusicButton();
+    initializeRecipeSearch();
+});
+</script>
+
 </head>
 
 <body>
@@ -4888,6 +5768,40 @@ document.addEventListener("DOMContentLoaded", function () {
     <p class="subtitle">
         Enter the ingredients you have and find recipes you can make.
     </p>
+    <p class="tagline">
+        Tell me what you've got. I'll figure out what you can make.
+    </p>
+
+    <div class="sound-control">
+        <div>
+            <button
+                type="button"
+                id="sound-toggle"
+                class="sound-toggle"
+                onclick="toggleKitchenMusic()"
+                aria-pressed="false"
+            >
+                🔇 Kitchen Music
+            </button>
+
+            <div class="music-note">
+                Enjoying the music?
+                <a
+                    href="https://open.spotify.com/track/4LlzdQEiToxeWtX622DmMP?si=422480aaa9b94c2c"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >Hear more on Spotify →</a>
+            </div>
+        </div>
+    </div>
+
+    <audio id="kitchen-music" preload="metadata">
+        <source
+            src="{{ url_for('static', filename='audio/Spirit-of-the-Woods.mp3') }}"
+            type="audio/mpeg"
+        >
+    </audio>
+
 <form method="POST">
 
     <div class="common-ingredients">
@@ -5119,6 +6033,31 @@ document.addEventListener("DOMContentLoaded", function () {
     {{ recipe.name }}
 </h2>
 
+{% if recipe.healthy %}
+
+    <p class="healthy-badge">
+        🥦 Healthy
+    </p>
+
+{% endif %}
+
+{% if recipe.quick %}
+
+    <p class="quick-badge">
+        ⏱️ Quick
+    </p>
+
+{% endif %}
+
+{% if recipe.fancy %}
+
+    <p class="fancy-badge">
+        ✨ Fancy
+    </p>
+
+{% endif %}
+
+
 {% if loop.first %}
 
     <p class="best-match">
@@ -5224,6 +6163,42 @@ document.addEventListener("DOMContentLoaded", function () {
                     </button>
 
                     <div class="recipe-details" style="display: none;">
+                        {% if recipe.nutrition %}
+                        <h3>Nutrition per serving</h3>
+                        {% if recipe.displayTotalTime %}
+                            <p><strong>Total time:</strong> {{ recipe.displayTotalTime }}</p>
+                        {% endif %}
+                        <div class="nutrition">
+                            {% if recipe.displayRecipeYield %}
+                                <p><strong>Yield:</strong> {{ recipe.displayRecipeYield }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("calories") %}
+                                <p><strong>Calories:</strong> {{ recipe.nutrition.get("calories") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("fatContent") %}
+                                <p><strong>Total fat:</strong> {{ recipe.nutrition.get("fatContent") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("saturatedFatContent") %}
+                                <p><strong>Saturated fat:</strong> {{ recipe.nutrition.get("saturatedFatContent") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("sodiumContent") %}
+                                <p><strong>Sodium:</strong> {{ recipe.nutrition.get("sodiumContent") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("proteinContent") %}
+                                <p><strong>Protein:</strong> {{ recipe.nutrition.get("proteinContent") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("carbohydrateContent") %}
+                                <p><strong>Carbohydrates:</strong> {{ recipe.nutrition.get("carbohydrateContent") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("fiberContent") %}
+                                <p><strong>Fiber:</strong> {{ recipe.nutrition.get("fiberContent") }}</p>
+                            {% endif %}
+                            {% if recipe.nutrition.get("sugarContent") %}
+                                <p><strong>Sugar:</strong> {{ recipe.nutrition.get("sugarContent") }}</p>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
                         <h3>Ingredients</h3>
 
                         <p class="recipe-note">
@@ -5374,10 +6349,64 @@ def home():
                 selected_common
             )
 
-            # Create a clean payload array incorporating user lifestyle and ethnic choices
-            search_payload = list(user_ingredients)
+            # Create a clean payload array incorporating user lifestyle and ethnic choices.
+            # Pantry ingredients incompatible with the selected diet must not influence
+            # the web search. For Vegan, ordinary animal proteins are ignored.
+            search_pantry = list(user_ingredients)
+
+            if selected_diet == "vegan":
+                excluded_search_items = {
+                    "chicken",
+                    "beef",
+                    "pork",
+                    "lamb",
+                    "turkey",
+                    "fish",
+                    "seafood",
+                    "salmon",
+                    "cod",
+                    "haddock",
+                    "tilapia",
+                    "tuna",
+                    "shrimp",
+                    "egg",
+                    "eggs",
+                    "milk",
+                    "cheese",
+                    "butter",
+                }
+
+                excluded_search_items.update(
+                    item
+                    for values in MEAT_GROUPS.values()
+                    for item in values
+                )
+
+                filtered_search_pantry = []
+
+                for pantry_item in search_pantry:
+                    normalized_item, _ = normalize_recipe_ingredient(
+                        pantry_item
+                    )
+                    normalized_item = ingredient_alias(
+                        clean_word(normalized_item)
+                    )
+
+                    if normalized_item in excluded_search_items:
+                        continue
+
+                    filtered_search_pantry.append(pantry_item)
+
+                search_pantry = filtered_search_pantry
+
+            search_payload = list(search_pantry)
+            print("BROWSER SEARCH PAYLOAD:", search_payload)
+            print("BROWSER USER INGREDIENTS:", user_ingredients)
             if selected_diet:
-                search_payload.append(selected_diet)
+                if selected_diet == "fancy":
+                    search_payload.append("gourmet")
+                else:
+                    search_payload.append(selected_diet)
             if selected_cuisine:
                 search_payload.append(selected_cuisine)
             recipes = find_recipes(
@@ -5408,5 +6437,5 @@ def home():
 if __name__ == "__main__":
 
     app.run(
-        debug=True
+        debug=False
     )
