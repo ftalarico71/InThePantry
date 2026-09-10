@@ -5,8 +5,14 @@ import os
 import json
 import html as html_lib
 from dotenv import load_dotenv
+import posthog
 
 load_dotenv()
+
+posthog_client = posthog.Posthog(
+    project_api_key=os.getenv("POSTHOG_API_KEY"),
+    host=os.getenv("POSTHOG_HOST", "https://us.i.posthog.com")
+)
 
 app = Flask(__name__)
 
@@ -5007,6 +5013,23 @@ HTML = """
     <meta name="viewport"
           content="width=device-width, initial-scale=1">
 
+    {% if posthog_api_key %}
+    <script>
+        !function(t,e){var o,n,p,r;e.__SV=1,window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.async=!0,p.src=s.api_host+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"};for(n="capture identify alias people.set people.set_once people.unset people.increment people.append people.remove people.group register register_once unregister opt_out_capturing opt_in_capturing has_opted_out_capturing has_opted_in_capturing clear_opt_out_capturing debug reset on onCapture onEvent onFeatureFlags reloadFeatureFlags getFeatureFlag getFeatureFlagPayload isFeatureEnabled getAllFlags getAllFlagsAndPayloads setPersonProperties resetPersonProperties getSessionId getDistinctId getGroupProperties getSessionRecordingProperties get_property".split(" "),o=0;o<n.length;o++)g(u,n[o]);e._i.push([i,s,a])},e.__SV=1}(document,window.posthog||[]);
+        posthog.init("{{ posthog_api_key }}", {
+            api_host: "https://us.i.posthog.com",
+            person_profiles: "identified_only",
+            capture_pageview: true,
+            capture_pageleave: true,
+            autocapture: true,
+            session_recording: {
+                maskAllInputs: true,
+                blockAllMedia: false
+            }
+        });
+    </script>
+    {% endif %}
+
     <style>
 
 
@@ -6427,7 +6450,8 @@ def home():
         pasta_group=PASTA_GROUP,
         selected_common=selected_common,
         selected_diet=selected_diet,
-        selected_cuisine=selected_cuisine
+        selected_cuisine=selected_cuisine,
+        posthog_api_key=os.getenv("POSTHOG_API_KEY")
     )
 
 # ---------------------------------------------------------
