@@ -5346,11 +5346,12 @@ HTML = """
 }
 
 .meat-category-grid {
-    padding: 4px 10px 12px;
+    padding: 8px 12px 14px;
     margin-top: 2px;
-    border: 1px solid #e2d6cc;
-    border-radius: 12px;
+    border: 2px solid #d6b9a5;
+    border-radius: 14px;
     background: #fcfaf8;
+    box-shadow: 0 2px 5px rgba(80, 55, 40, 0.08);
 }
 
 .category-arrow {
