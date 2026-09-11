@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template_string
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import os
 import json
@@ -3013,7 +3014,6 @@ def match_recipe_to_pantry(recipe, pantry_items):
     }
 
 def search_web_recipes(user_ingredients, count=10):
-
     if not user_ingredients:
         return []
 
@@ -3030,10 +3030,7 @@ def search_web_recipes(user_ingredients, count=10):
     if not ingredients:
         return []
 
-    # Keep the original full-pantry search, but diversify candidate retrieval
-    # when multiple proteins are selected. The full query preserves the existing
-    # behavior, while protein-specific queries ensure each selected protein can
-    # contribute recipes to the candidate pool.
+    # Full-pantry search plus extra protein-specific queries if multiple proteins.
     queries = [" ".join(ingredients) + " recipe"]
 
     selected_protein_terms = []
@@ -3069,15 +3066,13 @@ def search_web_recipes(user_ingredients, count=10):
             )
 
             if response.status_code != 200:
-                print(
-                    "Brave API response:",
-                    response.status_code,
-                    response.text
-                )
+                print("Brave API response:", response.status_code, response.text)
                 response.raise_for_status()
 
             data = response.json()
             web_results = data.get("web", {}).get("results", [])
+
+            candidates = []
 
             for result in web_results:
                 title = result.get("title", "").strip()
@@ -3087,164 +3082,127 @@ def search_web_recipes(user_ingredients, count=10):
                 if not title or not url or url in seen_urls:
                     continue
 
-                recipe = extract_web_recipe(url)
-
-                if not recipe:
-                    print(
-                        "Skipping search result - recipe could not be extracted:",
-                        url
-                    )
-                    continue
-
-                if not recipe.get("name"):
-                    recipe["name"] = title
-
-                if not recipe.get("ingredients"):
-                    print(
-                        "Skipping search result - no ingredients found:",
-                        url
-                    )
-                    continue
-
-                # UNIVERSAL RECIPE INGREDIENT CLEANUP
-                cleaned_ingredients = []
-
-                for raw_ingredient in recipe.get("ingredients", []):
-                    if not isinstance(raw_ingredient, str):
-                        continue
-
-                    normalized, alternatives = normalize_recipe_ingredient(
-                        raw_ingredient
-                    )
-
-                    if not normalized:
-                        continue
-
-                    if alternatives:
-                        normalized = (
-                            normalized
-                            + " or "
-                            + " or ".join(
-                                alt.strip()
-                                for alt in alternatives
-                                if alt.strip()
-                            )
-                        ).strip()
-
-                    cleaned_ingredients.append(normalized)
-
-                recipe["ingredients"] = cleaned_ingredients
-
-                if not recipe.get("ingredients"):
-                    print(
-                        "Skipping search result - no usable ingredients found:",
-                        url
-                    )
-                    continue
-
-                if not recipe.get("description"):
-                    recipe["description"] = description
-
+                candidates.append((title, url, description))
                 seen_urls.add(url)
-                results.append(recipe)
 
-                if len(results) >= count:
-                    break
+            # Fetch recipe pages concurrently instead of waiting for each
+            # website to finish before starting the next one.
+            def fetch_candidate(candidate):
+                title, url, description = candidate
+                recipe = extract_web_recipe(url)
+                return title, url, description, recipe
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [
+                    executor.submit(fetch_candidate, candidate)
+                    for candidate in candidates
+                ]
+
+                for future in as_completed(futures):
+                    try:
+                        title, url, description, recipe = future.result()
+                    except Exception as e:
+                        print("Recipe extraction error:", e)
+                        continue
+
+                    if not recipe:
+                        print(
+                            "Skipping search result - recipe could not be extracted:",
+                            url
+                        )
+                        continue
+
+                    if not recipe.get("name"):
+                        recipe["name"] = title
+
+                    if not recipe.get("ingredients"):
+                        print(
+                            "Skipping search result - no ingredients found:",
+                            url
+                        )
+                        continue
+
+                    # UNIVERSAL RECIPE INGREDIENT CLEANUP
+                    cleaned_ingredients = []
+                    for raw_ingredient in recipe.get("ingredients", []):
+                        if not isinstance(raw_ingredient, str):
+                            continue
+
+                        normalized, alternatives = normalize_recipe_ingredient(
+                            raw_ingredient
+                        )
+
+                        if not normalized:
+                            continue
+
+                        if alternatives:
+                            normalized = (
+                                normalized
+                                + " or "
+                                + " or ".join(
+                                    alt.strip()
+                                    for alt in alternatives
+                                    if alt.strip()
+                                )
+                            ).strip()
+
+                        cleaned_ingredients.append(normalized)
+
+                    recipe["ingredients"] = cleaned_ingredients
+
+                    if not recipe.get("ingredients"):
+                        print(
+                            "Skipping search result - no usable ingredients found:",
+                            url
+                        )
+                        continue
+
+                    if not recipe.get("description"):
+                        recipe["description"] = description
+
+                    results.append(recipe)
+
+                    if len(results) >= count:
+                        # We already have enough usable recipes.
+                        # Pending futures are cancelled where possible.
+                        for pending in futures:
+                            if not pending.done():
+                                pending.cancel()
+                        break
+
+            if len(results) >= count:
+                break
 
         return results
 
     except requests.HTTPError as e:
-        print(
-            "Brave web search HTTP error:",
-            e
-        )
+        print("Brave web search HTTP error:", e)
         return []
 
     except requests.RequestException as e:
-        print(
-            "Brave web search error:",
-            e
-        )
+        print("Brave web search error:", e)
         return []
-
-def extract_known_ingredient(text):
-    # Extract the actual known ingredient while ignoring surrounding
-    # recipe metadata. Never extract a shorter ingredient from the
-    # middle of a different ingredient name such as "chicken stock".
-    if not text:
-        return ''
-
-    cleaned = re.sub(r'[^a-z\s]', ' ', text.lower())
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    if not cleaned:
-        return ''
-
-    if ' and ' in cleaned or ',' in cleaned:
-        return ''
-
-    known = set()
-
-    for variants in CORE_INGREDIENTS.values():
-        known.update(variants)
-
-    for category_values in COMMON_INGREDIENTS.values():
-        known.update(category_values)
-
-    known = sorted(
-        known,
-        key=lambda x: (len(x.split()), len(x)),
-        reverse=True
-    )
-
-    # Exact match is always authoritative.
-    if cleaned in known:
-        return cleaned
-
-    metadata_words = {
-        'a', 'an', 'the', 'some', 'any', 'each',
-        'one', 'two', 'three', 'four', 'five',
-        'six', 'seven', 'eight', 'nine', 'ten',
-        'fresh', 'freshly', 'dried', 'raw', 'cooked',
-        'uncooked', 'beaten', 'whisked', 'grated',
-        'shredded', 'finely', 'thinly', 'boneless',
-        'skinless', 'peeled', 'diced', 'chopped',
-        'minced', 'cubed', 'sliced', 'halved',
-        'large', 'medium', 'small', 'scant', 'heaping',
-        'lightly', 'well', 'seasoned', 'homemade',
-        'cut', 'into', 'in', 'pieces', 'piece',
-        'chunks', 'chunk', 'cubes', 'cube',
-        'strips', 'strip', 'slices', 'slice',
-        'wedges', 'wedge', 'stems', 'stem',
-        'removed', 'divided', 'plus', 'more',
-        'serving', 'taste', 'garnish'
-    }
-
-    for ingredient in known:
-        pattern = (
-            r'(?<![a-z])'
-            + re.escape(ingredient.lower())
-            + r'(?![a-z])'
-        )
-
-        match = re.search(pattern, cleaned)
-        if not match:
-            continue
-
-        before = cleaned[:match.start()].strip().split()
-        after = cleaned[match.end():].strip().split()
-
-        # Anything surrounding the ingredient must be metadata.
-        if all(word in metadata_words for word in before + after):
-            return ingredient.lower()
-
-    return ''
-    
 
 def normalize_recipe_ingredient(text):
     if not text:
         return '', []
 
     text = text.lower().strip()
+
+    # Preserve recipe-site slash alternatives without confusing them with
+    # fractional quantities such as 1/4.
+    #
+    # Examples:
+    #   "Plain / All Purpose Flour" -> "plain __SLASH_OR__ all purpose flour"
+    #   "olive oil / vegetable oil" -> "olive oil __SLASH_OR__ vegetable oil"
+    #   "1/4 cup / 40g Plain / All Purpose Flour"
+    #       -> preserve 1/4 while separating the ingredient alternatives.
+    text = re.sub(
+        r'(?<!\d)\s*/\s*(?!\d)',
+        ' ZZSLASHALTZZ ',
+        text,
+        flags=re.IGNORECASE,
+    )
 
     # Salt and pepper are universal pantry staples and never become
     # recipe requirements, regardless of common recipe lead-in wording.
@@ -3438,9 +3396,14 @@ def normalize_recipe_ingredient(text):
 
     # Remove ordinary quantities that are separated from their units.
     text = re.sub(
-        r'\b\d+(?:[./]\d+)?(?:\s*[~\-]\s*\d+(?:[./]\d+)?)?\b',
+        r'\b\d+(?:[./]\d+)?(?:\s*[~\-]\s*\d+(?:[./]\d+)?)?'
+        r'(?:\s*(?:g|gram|grams|kg|kilogram|kilograms|lbs?|pounds?|oz|ounces?|'
+        r'ml|milliliter|milliliters|l|liter|liters|cups?|cup|tbsp|tbs|'
+        r'tablespoons?|tsp|teaspoons?|cloves?|heads?|ea|mass|spoon|spoons|'
+        r'bowl|bowls))?\b',
         ' ',
-        text
+        text,
+        flags=re.IGNORECASE
     )
 
     # Remove common units and size words, whether attached to the
@@ -3463,6 +3426,85 @@ def normalize_recipe_ingredient(text):
         text,
         flags=re.IGNORECASE
     )
+
+    # Restore slash-written ingredient alternatives after quantity/unit
+    # cleanup. The private marker survives until this point so fractional
+    # quantities such as 1/4 are never mistaken for alternatives.
+    #
+    # Examples:
+    #   "plain __SLASH_OR__ all purpose flour"
+    #       -> primary "plain flour", alternative "all purpose flour"
+    #   "olive oil __SLASH_OR__ vegetable oil"
+    #       -> primary "olive oil", alternative "vegetable oil"
+    #   "chicken broth __SLASH_OR__ water"
+    #       -> primary "chicken broth", alternative "water"
+    slash_parts = [
+        part.strip()
+        for part in text.split('ZZSLASHALTZZ')
+        if part.strip()
+    ]
+
+    if len(slash_parts) >= 2:
+        # A quantity can be attached directly to a unit, such as "40g".
+        # After the quantity is removed, the unit may remain on the slash
+        # side. Clean those residual measurement units before identifying
+        # the ingredient alternatives.
+        cleaned_slash_parts = []
+
+        for part in slash_parts:
+            part = re.sub(
+                r'\b(?:g|gram|grams|kg|kilogram|kilograms|lbs?|pounds?|oz|ounces?|'
+                r'ml|milliliter|milliliters|l|liter|liters|cups?|cup|tbsp|tbs|'
+                r'tablespoons?|tsp|teaspoons?|cloves?|heads?|ea|mass|spoon|spoons|'
+                r'bowl|bowls|large|medium|small|thin|inches?|inch)\b',
+                ' ',
+                part,
+                flags=re.IGNORECASE
+            )
+            part = re.sub(r'\s+', ' ', part).strip()
+
+            if part:
+                cleaned_slash_parts.append(part)
+
+        slash_parts = cleaned_slash_parts
+
+        if len(slash_parts) >= 2:
+            primary_slash = slash_parts[0]
+            slash_alternatives = slash_parts[1:]
+
+            # Recipe sites sometimes abbreviate the first side of an
+            # alternative pair, e.g. "Plain / All Purpose Flour".
+            # Complete the abbreviated side using the shared final
+            # ingredient word. Fully specified alternatives are unchanged.
+            first_alternative = slash_alternatives[0]
+            primary_words = primary_slash.split()
+            alternative_words = first_alternative.split()
+
+            # When an earlier slash side is only measurement metadata,
+            # the actual ingredient alternative may be the final slash
+            # side. Use the final alternative as the shared-tail source
+            # when it gives us a more complete ingredient identity.
+            tail_source = slash_alternatives[-1]
+            tail_words = tail_source.split()
+
+            if len(tail_words) >= 2:
+                alternative_words = tail_words
+
+            if (
+                primary_words
+                and len(alternative_words) >= 2
+                and primary_words[-1].lower() != alternative_words[-1].lower()
+            ):
+                shared_tail = alternative_words[-1]
+                candidate = ' '.join(primary_words + [shared_tail])
+
+                if len(primary_words) == 1:
+                    primary_slash = candidate
+                elif extract_known_ingredient(candidate):
+                    primary_slash = candidate
+
+            text = primary_slash
+            alternatives = slash_alternatives
 
     # Reduce descriptive meat preparation wording to the actual cut.
     text = re.sub(r'\bcenter\s+cut\s+(pork\s+loin)\b.*', r'\1', text)
@@ -3689,6 +3731,77 @@ def normalize_recipe_metadata(value):
 
     return normalized
 
+def extract_known_ingredient(text):
+    # Extract the actual known ingredient while ignoring surrounding
+    # recipe metadata. Never extract a shorter ingredient from the
+    # middle of a different ingredient name such as "chicken stock".
+    if not text:
+        return ''
+
+    cleaned = re.sub(r'[^a-z\s]', ' ', text.lower())
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    if not cleaned:
+        return ''
+
+    if ' and ' in cleaned or ',' in cleaned:
+        return ''
+
+    known = set()
+
+    for variants in CORE_INGREDIENTS.values():
+        known.update(variants)
+
+    for category_values in COMMON_INGREDIENTS.values():
+        known.update(category_values)
+
+    known = sorted(
+        known,
+        key=lambda x: (len(x.split()), len(x)),
+        reverse=True
+    )
+
+    # Exact match is always authoritative.
+    if cleaned in known:
+        return cleaned
+
+    metadata_words = {
+        'a', 'an', 'the', 'some', 'any', 'each',
+        'one', 'two', 'three', 'four', 'five',
+        'six', 'seven', 'eight', 'nine', 'ten',
+        'fresh', 'freshly', 'dried', 'raw', 'cooked',
+        'uncooked', 'beaten', 'whisked', 'grated',
+        'shredded', 'finely', 'thinly', 'boneless',
+        'skinless', 'peeled', 'diced', 'chopped',
+        'minced', 'cubed', 'sliced', 'halved',
+        'large', 'medium', 'small', 'scant', 'heaping',
+        'lightly', 'well', 'seasoned', 'homemade',
+        'cut', 'into', 'in', 'pieces', 'piece',
+        'chunks', 'chunk', 'cubes', 'cube',
+        'strips', 'strip', 'slices', 'slice',
+        'wedges', 'wedge', 'stems', 'stem',
+        'removed', 'divided', 'plus', 'more',
+        'serving', 'taste', 'garnish'
+    }
+
+    for ingredient in known:
+        pattern = (
+            r'(?<![a-z])'
+            + re.escape(ingredient.lower())
+            + r'(?![a-z])'
+        )
+
+        match = re.search(pattern, cleaned)
+        if not match:
+            continue
+
+        before = cleaned[:match.start()].strip().split()
+        after = cleaned[match.end():].strip().split()
+
+        # Anything surrounding the ingredient must be metadata.
+        if all(word in metadata_words for word in before + after):
+            return ingredient.lower()
+
+    return ''
 
 def extract_web_recipe(url):
     try:
