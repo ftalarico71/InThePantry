@@ -6018,11 +6018,6 @@ document.addEventListener("DOMContentLoaded", function () {
         <p class="ingredient-help">Quick selections are general categories. For more accurate recipe matches, select the specific ingredient you have when available, or enter it manually. For example, "Cheese" is less specific than "Cheddar Cheese."</p>
 
         
-    <button
-        type="button"
-        class="ingredient-category"
-        onclick="toggleIngredientCategory(this)"
-
 {% for category, ingredients in common_ingredients.items() %}
 
     {% if category == "Meat & Seafood" %}
