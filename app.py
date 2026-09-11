@@ -5357,6 +5357,11 @@ HTML = """
 .meat-category-section > .ingredient-category {
     margin-top: 0;
     margin-bottom: 0;
+    border: 0;
+    border-left: 6px solid #d96b5f;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 .meat-category-grid {
