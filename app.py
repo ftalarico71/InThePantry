@@ -5295,6 +5295,56 @@ HTML = """
     border-color: #b9cdb8;
 }
 
+/* Give each top-level ingredient category its own visual identity.
+   The colors are intentionally soft so the interface stays clean. */
+.ingredient-category.category-color-1 {
+    border-left: 6px solid #d96b5f;
+    background: #fff7f5;
+    color: #8f352c;
+}
+
+.ingredient-category.category-color-2 {
+    border-left: 6px solid #5b9b6d;
+    background: #f5fbf6;
+    color: #356a43;
+}
+
+.ingredient-category.category-color-3 {
+    border-left: 6px solid #d6a64f;
+    background: #fffbf2;
+    color: #86621e;
+}
+
+.ingredient-category.category-color-4 {
+    border-left: 6px solid #5c8fc7;
+    background: #f5f9fe;
+    color: #315f8d;
+}
+
+.ingredient-category.category-color-5 {
+    border-left: 6px solid #9a75b5;
+    background: #faf7fc;
+    color: #694681;
+}
+
+.ingredient-category.category-color-6 {
+    border-left: 6px solid #d17b43;
+    background: #fff8f2;
+    color: #8a4c25;
+}
+
+.ingredient-category.category-color-7 {
+    border-left: 6px solid #4e9c9a;
+    background: #f3fbfb;
+    color: #286967;
+}
+
+.ingredient-category.category-color-8 {
+    border-left: 6px solid #7d8fbd;
+    background: #f6f8fd;
+    color: #4d5e8a;
+}
+
 .category-arrow {
     color: #333;
     font-size: 14px;
@@ -5955,7 +6005,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     <button
         type="button"
-        class="ingredient-category"
+        class="ingredient-category category-color-{{ loop.index }}"
         onclick="toggleIngredientCategory(this)"
     >
         <span>{{ category }}</span>
