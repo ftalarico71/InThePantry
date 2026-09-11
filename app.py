@@ -5345,6 +5345,14 @@ HTML = """
     color: #4d5e8a;
 }
 
+.meat-category-grid {
+    padding: 4px 10px 12px;
+    margin-top: 2px;
+    border: 1px solid #e2d6cc;
+    border-radius: 12px;
+    background: #fcfaf8;
+}
+
 .category-arrow {
     color: #333;
     font-size: 14px;
@@ -6012,7 +6020,7 @@ document.addEventListener("DOMContentLoaded", function () {
         <span class="category-arrow">▶</span>
     </button>
 
-    <div class="ingredient-grid category-grid">
+    <div class="ingredient-grid category-grid{% if category == "Meat & Seafood" %} meat-category-grid{% endif %}">
 
         {% if category == "Meat & Seafood" %}
 
