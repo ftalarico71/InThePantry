@@ -5981,7 +5981,7 @@ document.addEventListener("DOMContentLoaded", function () {
         </div>
     </div>
 
-    <audio id="kitchen-music" preload="metadata">
+    <audio id="kitchen-music" preload="metadata" loop>
         <source
             src="{{ url_for('static', filename='audio/Spirit-of-the-Woods.mp3') }}"
             type="audio/mpeg"
