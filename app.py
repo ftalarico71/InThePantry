@@ -63,6 +63,8 @@ PANTRY_STAPLES = {
 #   butter -> stick butter              YES
 # ---------------------------------------------------------
 
+_FIND_CORE_CACHE = {}
+
 CORE_INGREDIENTS = {
 
     "chicken": {
@@ -1038,27 +1040,24 @@ def canonical_ingredient_identity(text):
 
 
 # ---------------------------------------------------------
-# INGREDIENT ALIASES
+# INGREDIENT ALIAS PERFORMANCE CACHE
 # ---------------------------------------------------------
 
-def ingredient_alias(text):
-    text = text.strip().lower()
-    if text == 'lean ground beef':
-        return 'ground beef'
-    text = clean_word(text)
+_INGREDIENT_ALIAS_CACHE = {}
+_INGREDIENT_ALIAS_CANDIDATES = None
 
-    # Correct obvious misspellings before applying aliases.
-    # Only very close matches to known ingredients are corrected.
-    from difflib import get_close_matches
+
+def _get_ingredient_alias_candidates():
+    global _INGREDIENT_ALIAS_CANDIDATES
+
+    if _INGREDIENT_ALIAS_CANDIDATES is not None:
+        return _INGREDIENT_ALIAS_CANDIDATES
 
     known_ingredients = set()
 
     for family_values in CORE_INGREDIENTS.values():
         known_ingredients.update(family_values)
 
-    # Also include the broader common-ingredient vocabulary.
-    # This gives typo correction access to ingredients such
-    # as tomato that are not part of CORE_INGREDIENTS.
     for category_values in COMMON_INGREDIENTS.values():
         known_ingredients.update(category_values)
 
@@ -1075,6 +1074,46 @@ def ingredient_alias(text):
         "parmesan",
         "breadcrumbs",
     ])
+
+    _INGREDIENT_ALIAS_CANDIDATES = frozenset(typo_candidates)
+
+    return _INGREDIENT_ALIAS_CANDIDATES
+
+
+# ---------------------------------------------------------
+# INGREDIENT ALIASES
+# ---------------------------------------------------------
+
+def ingredient_alias(text):
+    if not isinstance(text, str):
+        return ""
+
+    raw_text = text.strip().lower()
+    if not raw_text:
+        return ""
+
+    cached = _INGREDIENT_ALIAS_CACHE.get(raw_text)
+    if cached is not None:
+        return cached
+
+    text = clean_word(raw_text)
+
+    if not text:
+        return ""
+
+    if cached is not None:
+        return cached
+
+    if text == 'lean ground beef':
+        result = 'ground beef'
+        _INGREDIENT_ALIAS_CACHE[raw_text] = result
+        return result
+
+    # Correct obvious misspellings before applying aliases.
+    # Only very close matches to known ingredients are corrected.
+    from difflib import get_close_matches
+
+    typo_candidates = _get_ingredient_alias_candidates()
 
     if text not in typo_candidates and text and text != "cracked pepper":
         close = get_close_matches(
@@ -1204,16 +1243,85 @@ def ingredient_alias(text):
         "soy": "soy sauce",
     }
 
-    return canonical_ingredient_identity(
+    result = canonical_ingredient_identity(
         aliases.get(text, text)
     )
+
+    # Keep the long-running production worker cache bounded.
+    if len(_INGREDIENT_ALIAS_CACHE) >= 10000:
+        _INGREDIENT_ALIAS_CACHE.clear()
+
+    _INGREDIENT_ALIAS_CACHE[raw_text] = result
+
+    return result
 
 
 # ---------------------------------------------------------
 # MATCH INGREDIENTS
 # ---------------------------------------------------------
 
-def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
+_INGREDIENT_MATCH_CACHE = {}
+
+_CORE_LOOKUP_CACHE = None
+
+
+def _get_core_ingredient_lookups(singular_fn):
+    global _CORE_LOOKUP_CACHE
+
+    if _CORE_LOOKUP_CACHE is not None:
+        return _CORE_LOOKUP_CACHE
+
+    core_exact_lookup = {}
+    core_singular_lookup = {}
+    core_descriptive_variants = []
+
+    for core_name, variants in CORE_INGREDIENTS.items():
+        core_name_clean = clean_word(core_name)
+        all_variants = {core_name_clean}
+
+        for variant in variants:
+            variant_clean = clean_word(variant)
+
+            if variant_clean:
+                all_variants.add(variant_clean)
+
+                variant_alias = ingredient_alias(variant_clean)
+                variant_alias = clean_word(variant_alias)
+
+                if variant_alias:
+                    all_variants.add(variant_alias)
+
+        for variant in all_variants:
+            if variant:
+                core_exact_lookup.setdefault(
+                    variant,
+                    core_name,
+                )
+
+                variant_singular = singular_fn(variant)
+
+                core_singular_lookup.setdefault(
+                    variant_singular,
+                    core_name,
+                )
+
+                core_descriptive_variants.append(
+                    (
+                        variant,
+                        variant.split(),
+                        core_name,
+                    )
+                )
+
+    _CORE_LOOKUP_CACHE = (
+        core_exact_lookup,
+        core_singular_lookup,
+        core_descriptive_variants,
+    )
+
+    return _CORE_LOOKUP_CACHE
+
+def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
     canonical_recipe = canonical_ingredient_identity(
         recipe_ingredient
     )
@@ -1798,77 +1906,93 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             return word[:-1]
         return word
 
+    # -------------------------------------------------------------
+    # FAST CORE INGREDIENT LOOKUP
+    # -------------------------------------------------------------
+    # Build the expensive CORE_INGREDIENTS variant index once.
+    # This preserves the existing exact, singular, alias, and
+    # descriptive matching behavior while avoiding a full scan of
+    # every core/variant for every new ingredient string.
+    # -------------------------------------------------------------
+
+    (
+        _core_exact_lookup,
+        _core_singular_lookup,
+        _core_descriptive_variants,
+    ) = _get_core_ingredient_lookups(singular)
+
     def find_core(ingredient):
         ingredient = clean_word(ingredient)
+
         if not ingredient:
             return None
+
         ingredient = ingredient_alias(ingredient)
         ingredient = clean_word(ingredient)
+
+        if not ingredient:
+            return None
+
         ingredient_singular = singular(ingredient)
 
+        cache_key = ingredient
+
+        if cache_key in _FIND_CORE_CACHE:
+            return _FIND_CORE_CACHE[cache_key]
+
+        # Exact variant lookup.
+        core_name = _core_exact_lookup.get(ingredient)
+
+        if core_name is not None:
+            _FIND_CORE_CACHE[cache_key] = core_name
+            return core_name
+
+        # Singular/plural lookup.
+        core_name = _core_singular_lookup.get(ingredient_singular)
+
+        if core_name is not None:
+            _FIND_CORE_CACHE[cache_key] = core_name
+            return core_name
+
+        # Preserve the existing descriptive-word behavior.
         best_descriptive_core = None
         best_descriptive_length = 0
+        ingredient_words = ingredient.split()
 
-        for core_name, variants in CORE_INGREDIENTS.items():
-            core_name_clean = clean_word(core_name)
-            all_variants = {core_name_clean}
+        for variant, variant_words, core_name in _core_descriptive_variants:
+            if (
+                not variant_words
+                or len(variant_words) > len(ingredient_words)
+            ):
+                continue
 
-            for variant in variants:
-                variant_clean = clean_word(variant)
-                if variant_clean:
-                    all_variants.add(variant_clean)
+            for i in range(
+                len(ingredient_words) - len(variant_words) + 1
+            ):
+                candidate = ingredient_words[
+                    i:i + len(variant_words)
+                ]
 
-                    # Also include the canonical alias form of the
-                    # variant. For example:
-                    #   "parmesan cheese" -> "parmesan"
-                    variant_alias = ingredient_alias(variant_clean)
-                    variant_alias = clean_word(variant_alias)
-                    if variant_alias:
-                        all_variants.add(variant_alias)
-            if ingredient in all_variants:
-                return core_name
+                if candidate == variant_words:
+                    match_length = len(variant_words)
 
-            for variant in all_variants:
-                if ingredient_singular == singular(variant):
-                    return core_name
+                    if match_length > best_descriptive_length:
+                        best_descriptive_core = core_name
+                        best_descriptive_length = match_length
 
-            # Descriptive recipe wording may contain a known ingredient
-            # variant without being an exact match.
-            #
-            # Examples:
-            #   "bulb garlic" -> garlic
-            #   "parmesan cheese topping" -> parmesan
-            #   "extra virgin olive oil the garlic and finishing" -> oil
-            #
-            # Use complete word boundaries so short cores such as "oil"
-            # cannot match inside unrelated words.
-            for variant in all_variants:
-                variant_words = variant.split()
-                ingredient_words = ingredient.split()
-
-                if not variant_words or len(variant_words) > len(ingredient_words):
-                    continue
-
-                for i in range(len(ingredient_words) - len(variant_words) + 1):
-                    candidate = ingredient_words[i:i + len(variant_words)]
-
-                    if candidate == variant_words:
-                        match_length = len(variant_words)
-                        if match_length > best_descriptive_length:
-                            best_descriptive_core = core_name
-                            best_descriptive_length = match_length
-
-                    if (
-                        len(variant_words) == 1
-                        and singular(candidate[0]) == singular(variant)
-                    ):
-                        if best_descriptive_length < 1:
-                            best_descriptive_core = core_name
-                            best_descriptive_length = 1
+                if (
+                    len(variant_words) == 1
+                    and singular(candidate[0]) == singular(variant)
+                ):
+                    if best_descriptive_length < 1:
+                        best_descriptive_core = core_name
+                        best_descriptive_length = 1
 
         if best_descriptive_core:
+            _FIND_CORE_CACHE[cache_key] = best_descriptive_core
             return best_descriptive_core
 
+        _FIND_CORE_CACHE[cache_key] = None
         return None
 
     # Compound flavored products such as branded dipping oils should not
@@ -3231,6 +3355,45 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             return True
 
     return False
+
+
+def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
+    """
+    Cached public wrapper around the existing ingredient matcher.
+
+    The underlying matching logic is intentionally untouched.
+    Cache entries are keyed by the exact inputs and the pantry-staple mode.
+    """
+
+    try:
+        user_key = tuple(user_ingredients or [])
+    except TypeError:
+        user_key = tuple(user_ingredients)
+
+    cache_key = (
+        recipe_ingredient,
+        user_key,
+        bool(allow_pantry_staple),
+    )
+
+    cached = _INGREDIENT_MATCH_CACHE.get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    result = _ingredient_matches_uncached(
+        recipe_ingredient,
+        user_ingredients,
+        allow_pantry_staple=allow_pantry_staple,
+    )
+
+    # Keep the long-running production worker cache bounded.
+    if len(_INGREDIENT_MATCH_CACHE) >= 10000:
+        _INGREDIENT_MATCH_CACHE.clear()
+
+    _INGREDIENT_MATCH_CACHE[cache_key] = result
+
+    return result
 
 
 def get_sensible_substitutions(ingredient):
