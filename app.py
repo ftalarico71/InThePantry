@@ -682,6 +682,362 @@ def clean_word(text):
 
 
 # ---------------------------------------------------------
+# UNIVERSAL CANONICAL INGREDIENT IDENTITY
+# ---------------------------------------------------------
+# InThePantry only needs the ingredient identity itself.
+#
+# Remove:
+#   - quantities
+#   - preparation instructions
+#   - source/editorial wording
+#   - non-identity quality/raising descriptors
+#   - non-identity size wording
+#   - dietary/source qualifiers
+#
+# Keep:
+#   - meaningful ingredient/flavor distinctions
+#   - actual ingredient varieties where they matter
+#
+# Pantry staples:
+#   - all salt forms -> removed
+#   - seasoning pepper -> removed
+#   - water -> removed
+#
+# Examples:
+#   grass fed ground beef -> ground beef
+#   lean ground beef -> ground beef
+#   garlic roughly -> garlic
+#   corn cut off the cob -> corn
+#   purple potatoes -> potato
+#   extra virgin olive oil -> olive oil
+#   red bell pepper -> red bell pepper
+#   jasmine rice -> jasmine rice
+# ---------------------------------------------------------
+
+def canonical_ingredient_identity(text):
+    if not isinstance(text, str):
+        return ""
+
+    text = clean_word(text)
+    if not text:
+        return ""
+
+    # "bone-in" becomes "bone in" inside clean_word().
+    # Treat that phrase as a non-identity descriptor so:
+    #   bone-in chicken breast -> chicken breast
+    #   bone-in chicken        -> chicken
+    text = re.sub(
+        r"\bbone\s+in\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return ""
+
+    # Handle explicit OR alternatives independently.
+    if " or " in text:
+        parts = []
+        for part in re.split(
+            r"\s+or\s+",
+            text,
+            flags=re.IGNORECASE
+        ):
+            canonical = canonical_ingredient_identity(part)
+            if canonical and canonical not in parts:
+                parts.append(canonical)
+        return " or ".join(parts)
+
+    # Salt + pepper seasoning is entirely a pantry staple.
+    # Do not remove real pepper vegetables such as bell/red/green pepper.
+    if (
+        re.search(r"\bsalt\b", text)
+        and re.search(r"\bpepper\b", text)
+        and not re.search(
+            r"\b(?:bell|red|green|yellow|orange)\s+pepper\b",
+            text
+        )
+    ):
+        return ""
+
+    # Remove salt in every seasoning/product form.
+    salt_seasoning = re.compile(
+        r"\b(?:(?:un)?salt(?:ed)?|"
+        r"(?:kosher|sea|table|fine|coarse|pink|himalayan|"
+        r"seasoned|garlic|onion|celery)\s+salt)\b"
+    )
+
+    if salt_seasoning.search(text):
+        # Salted/unsalted butter is still butter.
+        if re.fullmatch(
+            r"(?:un)?salted\s+butter",
+            text
+        ):
+            return "butter"
+
+        # Salt-cured ingredients keep the underlying ingredient identity.
+        text = salt_seasoning.sub(" ", text).strip()
+
+        if not text:
+            return ""
+
+    # Water is a pantry staple.
+    if re.fullmatch(
+        r"(?:hot|warm|cold|boiling|boiled|room\s+temperature|"
+        r"filtered|distilled)?\s*water",
+        text,
+    ):
+        return ""
+
+    # Seasoning pepper is a pantry staple.
+    # Pepper vegetables and pepper-flake products remain ingredients.
+    if (
+        re.fullmatch(
+            r"(?:(?:freshly|fresh)\s+)?"
+            r"(?:ground|cracked)\s+(?:black|white)?\s*pepper",
+            text,
+        )
+        or re.fullmatch(r"(?:black|white)\s+pepper", text)
+        or text == "pepper"
+    ):
+        return ""
+
+    # Remove non-identity quality / raising descriptors.
+    text = re.sub(
+        r"\b(?:grass\s+fed|grassfed|grain\s+fed|pasture\s+raised|"
+        r"free\s+range|organic|all\s+natural|natural|lean|"
+        r"extra\s+lean|premium|boneless|skinless)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove non-identity size wording.
+    text = re.sub(
+        r"\b(?:extra\s+large|large|medium|small|baby|little|"
+        r"bunches?)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove universal product/state descriptors that do not define
+    # ingredient identity.
+    #
+    # Examples:
+    #   canned corn undrained -> corn
+    #   granulated garlic powder -> garlic powder
+    #   reduced fat cheese -> cheese
+    #   low sodium soy sauce -> soy sauce
+    text = re.sub(
+        r"\b(?:canned|jarred|packaged|prepackaged|"
+        r"undrained|granulated|reduced\s+fat|low\s+fat|"
+        r"fat\s+free|nonfat|low\s+sodium|"
+        r"no\s+salt\s+added|unsweetened|"
+        r"sugar\s+free)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove wording such as "various colors".
+    text = re.sub(
+        r"\b(?:various|different|assorted)\s+colors?\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b(?:various|different|assorted)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Preparation/instruction wording starts the non-identity tail.
+    text = re.sub(
+        r"\s+\b(?:roughly|rough|lightly|heavily|"
+        r"chopped|chop|diced|dice|sliced|slice|cubed|cube|"
+        r"minced|mince|mashed|mash|crushed|crush|"
+        r"smashed|smash|grated|grate|shredded|shred|"
+        r"julienned|cut|cutting|quartered|halved|"
+        r"peeled|peel|trimmed|trim|browned|cooked|uncooked|"
+        r"drained|rinsed|washed|roasted|baked|boiled|"
+        r"sauteed|saute|sautéed|sauté|fried|grilled|"
+        r"seared|steamed|thawed|softened|melted|reserved|"
+        r"divided|for\s+garnish|for\s+serving|as\s+needed|"
+        r"to\s+taste)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove connector/prose tails left after preparation cleanup.
+    # Do not treat the "in" from hyphenated ingredient wording such as
+    # "bone-in chicken breast" as a connector.
+    text = re.sub(
+        r"(?<!-)\s+\b(?:off|from|into|on|in|with|and)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return ""
+
+    # A compound seasoning may become just a pepper phrase after salt removal.
+    if (
+        re.fullmatch(r"pepper", text)
+        or re.fullmatch(r"(?:black|white)\s+pepper", text)
+        or re.fullmatch(
+            r"(?:(?:freshly|fresh)\s+)?"
+            r"(?:ground|cracked)\s+pepper",
+            text,
+        )
+        or re.fullmatch(
+            r"(?:(?:freshly|fresh)\s+)?"
+            r"(?:ground|cracked)\s+"
+            r"(?:black|white)\s+pepper",
+            text,
+        )
+    ):
+        return ""
+
+    # Olive oil is one ingredient regardless of olive-oil style.
+    text = re.sub(
+        r"\b(?:extra\s+virgin|virgin|light|pure|"
+        r"cold\s+pressed|first\s+press)\s+olive\s+oil\b",
+        "olive oil",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Preserve meaningful pepper and onion flavor distinctions.
+    text = re.sub(
+        r"\b(red|green|yellow|orange)\s+bell\s+peppers\b",
+        r"\1 bell pepper",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bbell\s+peppers\b",
+        "bell pepper",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\bgreen\s+onions\b",
+        "green onion",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bspring\s+onions?\b",
+        "green onion",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bscallions?\b",
+        "green onion",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bonions\b",
+        "onion",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Universal potato identity cleanup for singular and plural varieties.
+    # Sweet potato is handled separately above and remains distinct.
+    potato_varieties = {
+        "red potato",
+        "purple potato",
+        "white potato",
+        "yellow potato",
+        "gold potato",
+        "yukon gold potato",
+        "russet potato",
+        "baby potato",
+        "new potato",
+        "small potato",
+    }
+
+    if text in potato_varieties:
+        return "potato"
+
+    # Potato color/variety is not ingredient identity for this app.
+    # Sweet potato remains distinct.
+    if re.fullmatch(
+        r"sweet\s+potatoes?",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "sweet potato"
+
+    if re.fullmatch(
+        r"(?:red|purple|white|yellow|gold|yukon\s+gold|russet|baby|new|small)?\s*potatoes?",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "potato"
+
+    # Retain flavor-specific rice varieties but remove non-identity wording.
+    text = re.sub(
+        r"\bextra\s+long\s+grain\s+white\s+rice\b",
+        "white rice",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\blong\s+grain\s+white\s+rice\b",
+        "white rice",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove dietary/source qualifiers while keeping the ingredient.
+    text = re.sub(
+        r"\bgluten\s+free\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bnon\s+gmo\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Known harmless plural forms.
+    singulars = {
+        "tomatoes": "tomato",
+        "carrots": "carrot",
+        "potatoes": "potato",
+        "mushrooms": "mushroom",
+        "bell peppers": "bell pepper",
+        "green onions": "green onion",
+        "red onions": "red onion",
+        "yellow onions": "yellow onion",
+        "white onions": "white onion",
+        "sweet onions": "sweet onion",
+    }
+
+    text = singulars.get(text, text)
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# ---------------------------------------------------------
 # INGREDIENT ALIASES
 # ---------------------------------------------------------
 
@@ -775,12 +1131,12 @@ def ingredient_alias(text):
                     text = best
 
     aliases = {
-        "spring onions": "onion",
-        "spring onion": "onion",
-        "green onions": "onion",
-        "green onion": "onion",
-        "scallions": "onion",
-        "scallion": "onion",
+        "spring onions": "green onion",
+        "spring onion": "green onion",
+        "green onions": "green onion",
+        "green onion": "green onion",
+        "scallions": "green onion",
+        "scallion": "green onion",
         "onions": "onion",
 
         "plain flour": "flour",
@@ -848,7 +1204,9 @@ def ingredient_alias(text):
         "soy": "soy sauce",
     }
 
-    return aliases.get(text, text)
+    return canonical_ingredient_identity(
+        aliases.get(text, text)
+    )
 
 
 # ---------------------------------------------------------
@@ -856,6 +1214,29 @@ def ingredient_alias(text):
 # ---------------------------------------------------------
 
 def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
+    canonical_recipe = canonical_ingredient_identity(
+        recipe_ingredient
+    )
+
+    if not canonical_recipe:
+        return False
+
+    recipe_ingredient = canonical_recipe
+
+    canonical_users = []
+
+    for user_item in (user_ingredients or []):
+        canonical_user = canonical_ingredient_identity(
+            user_item
+        )
+
+        if canonical_user:
+            canonical_users.append(
+                canonical_user
+            )
+
+    user_ingredients = canonical_users
+
     original_recipe_name = clean_word(recipe_ingredient)
 
     # -----------------------------------------------------
@@ -1163,6 +1544,93 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
 
             # Olive oil and non-olive cooking oils remain distinct.
             return False
+
+    # -----------------------------------------------------
+    # EARLY DESCRIPTIVE GROUND-MEAT PROTECTION
+    # -----------------------------------------------------
+    # Ground-meat matching is directional:
+    #
+    #   ground beef + ground beef              = TRUE
+    #   ground beef + lean ground beef         = FALSE
+    #   ground beef + grass fed ground beef    = FALSE
+    #
+    #   lean ground beef + ground beef         = TRUE
+    #   grass fed ground beef + ground beef    = TRUE
+    #
+    # Descriptive ground meat may NOT substitute
+    # for generic ground meat, but generic ground
+    # meat MAY satisfy descriptive ground meat.
+    # -----------------------------------------------------
+    def early_ground_animal(name):
+        name = clean_word(name)
+        if not name:
+            return None
+
+        match = re.search(
+            r"\bground\s+(beef|chicken|pork|turkey|lamb)\b",
+            name,
+        )
+        return match.group(1) if match else None
+
+    recipe_ground_animal = early_ground_animal(original_recipe_name)
+
+    if recipe_ground_animal:
+        generic_ground_name = f"ground {recipe_ground_animal}"
+
+        exact_recipe_present = False
+        generic_ground_present = False
+        descriptive_ground_present = False
+
+        for raw_user_item in (user_ingredients or []):
+            user_raw = clean_word(raw_user_item)
+            if not user_raw:
+                continue
+
+            user_ground_animal = early_ground_animal(user_raw)
+
+            if user_ground_animal != recipe_ground_animal:
+                continue
+
+            if user_raw == original_recipe_name:
+                exact_recipe_present = True
+
+            if user_raw == generic_ground_name:
+                generic_ground_present = True
+            else:
+                descriptive_ground_present = True
+
+        # Exact same ground-meat wording always matches.
+        if exact_recipe_present:
+            return True
+
+        # Generic ground meat in the pantry can satisfy
+        # a descriptive recipe requirement.
+        if original_recipe_name != generic_ground_name:
+            if generic_ground_present:
+                return True
+
+            # Descriptive ground meat cannot substitute for
+            # a different descriptive ground-meat requirement.
+            if descriptive_ground_present:
+                return False
+
+        # Generic recipe ground meat requires the exact
+        # generic ground meat; descriptive pantry wording
+        # must not satisfy it.
+        elif descriptive_ground_present:
+            return False
+
+    else:
+        # A ground-meat pantry item must never satisfy a
+        # non-ground recipe ingredient through broad core
+        # matching.
+        #
+        # Do not return False merely because ANY pantry item
+        # is ground; only block when the recipe itself is a
+        # recognized meat family and the ground item belongs
+        # to that same family. The authoritative meat logic
+        # below handles the complete hierarchy.
+        pass
 
     normalized_recipe, _ = normalize_recipe_ingredient(recipe_name)
     if normalized_recipe:
@@ -1479,6 +1947,23 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
 
                 for i in range(len(recipe_words) - len(variant_words) + 1):
                     if recipe_words[i:i + len(variant_words)] == variant_words:
+                        # Recognized meat is never a compound component.
+                        # Meat wording must always be handled by the
+                        # authoritative meat hierarchy below so that:
+                        #   ground beef -> lean ground beef = TRUE
+                        #   lean ground beef -> ground beef = FALSE
+                        #   ground beef -> grass fed ground beef = TRUE
+                        #   ground beef -> beef = FALSE
+                        #   beef -> ground beef = FALSE
+                        if core_name in {
+                            "beef",
+                            "chicken",
+                            "pork",
+                            "turkey",
+                            "lamb",
+                        }:
+                            continue
+
                         compound_component_cores.add(core_name)
                         break
 
@@ -1788,9 +2273,30 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         name = clean_word(name)
         if not name:
             return False
+
         name = ingredient_alias(name)
         name = clean_word(name)
-        return name in ground_meats or "ground beef" in name
+        if not name:
+            return False
+
+        if name in ground_meats:
+            return True
+
+        # Recognize descriptive ground-meat wording universally.
+        # Examples:
+        #   lean ground beef
+        #   grass fed ground beef
+        #   lean ground chicken
+        #   seasoned ground pork
+        for parent in ground_meats:
+            animal = parent.replace("ground ", "", 1)
+            if re.search(
+                rf"\bground\s+{re.escape(animal)}\b",
+                name,
+            ):
+                return True
+
+        return False
 
     def is_steak_cut(name):
         name = clean_word(name)
@@ -1867,6 +2373,14 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         direct = meat_lookup.get(name)
         if direct:
             return direct
+
+        # Descriptive ground-meat wording belongs to its animal parent.
+        # Examples: grass fed ground beef, lean ground chicken.
+        # This preserves the existing ground-vs-non-ground protection.
+        for parent in ground_meats:
+            animal = parent.replace("ground ", "", 1)
+            if re.search(rf"\bground\s+{re.escape(animal)}\b", name):
+                return animal
 
         # Descriptive steak wording belongs to the beef parent.
         # Ground meat remains excluded by is_steak_cut().
@@ -1948,7 +2462,14 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
                 "lamb",
             }
 
-            if recipe_name in meat_lookup or user_name in meat_lookup:
+            # Meat hierarchy is authoritative below.
+            # Protect all recognized meat wording, including descriptive
+            # forms such as "lean ground beef" and "grass fed ground beef",
+            # from broad CORE_INGREDIENTS matching.
+            if (
+                resolve_meat_parent(recipe_name)
+                or resolve_meat_parent(user_name)
+            ):
                 continue
 
             # Prevent specific oil products from matching through the broad oil core.
@@ -1990,8 +2511,6 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
                 and recipe_core in animal_core_names
             ):
                 continue
-
-                return True
 
     # -----------------------------------------------------
     # PASTA MATCHING
@@ -2208,6 +2727,90 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
     recipe_parent = resolve_meat_parent(recipe_name)
 
     # -----------------------------------------------------
+    # FISH / SEAFOOD HIERARCHY MATCHING
+    # -----------------------------------------------------
+    # Generic pantry fish can satisfy a specific form of the
+    # same species. Specific species/forms cannot substitute
+    # for generic fish or another species.
+    #
+    # salmon -> salmon filet       TRUE
+    # salmon -> salmon fillet      TRUE
+    # salmon -> salmon filets      TRUE
+    # salmon filet -> salmon       FALSE
+    # salmon -> cod                FALSE
+    # -----------------------------------------------------
+    fish_parents = {
+        "salmon": {
+            "salmon", "salmon filet", "salmon filets",
+            "salmon fillet", "salmon fillets",
+            "salmon steak", "salmon steaks",
+        },
+        "cod": {
+            "cod", "cod filet", "cod filets",
+            "cod fillet", "cod fillets",
+        },
+        "haddock": {
+            "haddock", "haddock filet", "haddock filets",
+            "haddock fillet", "haddock fillets",
+        },
+        "tilapia": {
+            "tilapia", "tilapia filet", "tilapia filets",
+            "tilapia fillet", "tilapia fillets",
+        },
+        "tuna": {
+            "tuna", "tuna filet", "tuna filets",
+            "tuna fillet", "tuna fillets",
+            "tuna steak", "tuna steaks",
+        },
+        "shrimp": {
+            "shrimp",
+        },
+    }
+
+    fish_lookup = {}
+    for parent, variants in fish_parents.items():
+        for variant in variants:
+            fish_lookup[variant] = parent
+
+    recipe_fish_parent = fish_lookup.get(recipe_name)
+
+    if recipe_fish_parent:
+        for user_item in user_ingredients or []:
+            user_name = clean_word(user_item)
+            if not user_name:
+                continue
+
+            user_name = ingredient_alias(user_name)
+            user_name = clean_word(user_name)
+            if not user_name:
+                continue
+
+            user_fish_parent = fish_lookup.get(user_name)
+            if not user_fish_parent:
+                continue
+
+            if user_fish_parent != recipe_fish_parent:
+                continue
+
+            # Exact/singular-plural same ingredient is valid.
+            if (
+                recipe_name == user_name
+                or singular(recipe_name) == singular(user_name)
+            ):
+                return True
+
+            # Generic pantry species can satisfy a specific recipe form.
+            if (
+                recipe_name != recipe_fish_parent
+                and user_name == recipe_fish_parent
+            ):
+                return True
+
+            # Specific pantry form cannot satisfy generic species
+            # or another specific form.
+            continue
+
+    # -----------------------------------------------------
     # AUTHORITATIVE MEAT HIERARCHY MATCHING
     # -----------------------------------------------------
     # Direction is intentional:
@@ -2255,6 +2858,22 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
             if (
                 recipe_name != recipe_parent
                 and user_name == recipe_parent
+            ):
+                return True
+
+            # Generic ground meat can satisfy descriptive ground meat
+            # of the same animal.
+            #
+            # Direction is intentional:
+            #   ground beef -> grass fed ground beef = TRUE
+            #   grass fed ground beef -> ground beef = FALSE
+            #   ground chicken -> lean ground chicken = TRUE
+            #   lean ground chicken -> ground chicken = FALSE
+            if (
+                recipe_is_ground
+                and user_is_ground
+                and recipe_name != user_name
+                and user_name == f"ground {recipe_parent}"
             ):
                 return True
 
@@ -2368,8 +2987,8 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         # Different animals
         #     FALSE
         # -----------------------------------------------------
-        recipe_meat_parent = meat_lookup.get(recipe_name)
-        user_meat_parent = meat_lookup.get(user_name)
+        recipe_meat_parent = resolve_meat_parent(recipe_name)
+        user_meat_parent = resolve_meat_parent(user_name)
 
         if recipe_meat_parent or user_meat_parent:
             # If only one side is recognized as meat, never allow
@@ -2456,6 +3075,24 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
         if recipe_core == "pepper" and recipe_name == "pepper" and user_name != "pepper":
             continue
 
+        # Meat hierarchy is authoritative. If either side is a
+        # recognized meat ingredient, the generic exact/singular
+        # fallback must not override the directional meat rules above.
+        #
+        # Examples:
+        #   ground beef <- lean ground beef = FALSE
+        #   ground beef <- grass fed ground beef = FALSE
+        #   ground beef -> lean ground beef = TRUE
+        #
+        # The authoritative meat block above has already handled
+        # valid meat matches. Anything reaching this point must not
+        # be allowed to become a broader generic match.
+        if (
+            resolve_meat_parent(recipe_name)
+            or resolve_meat_parent(user_name)
+        ):
+            continue
+
         if (
             recipe_name == user_name
             or singular(recipe_name) == singular(user_name)
@@ -2485,6 +3122,27 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
 
                 # Ground meat never matches whole/cut meat.
                 if recipe_is_ground != user_is_ground:
+                    continue
+
+                # A descriptive ground-meat pantry item must not satisfy
+                # a generic ground-meat recipe requirement.
+                #
+                # Examples:
+                #   ground beef <- lean ground beef       FALSE
+                #   ground beef <- grass fed ground beef  FALSE
+                #   ground chicken <- lean ground chicken FALSE
+                #
+                # The reverse direction is intentionally allowed by the
+                # authoritative hierarchy above:
+                #   lean ground beef <- ground beef       TRUE
+                #   lean ground chicken <- ground chicken TRUE
+                if (
+                    recipe_is_ground
+                    and user_is_ground
+                    and recipe_name in ground_meats
+                    and user_name != recipe_name
+                    and resolve_meat_parent(user_name) == recipe_core
+                ):
                     continue
 
                 # A specific pantry cut must not satisfy generic recipe meat.
@@ -3123,28 +3781,195 @@ def search_web_recipes(user_ingredients, count=10):
                         continue
 
                     # UNIVERSAL RECIPE INGREDIENT CLEANUP
+                    #
+                    # Preserve the source ingredient text separately so the
+                    # actual recipe amount can be used later for recipe
+                    # display, shopping, pricing, or monetization.
+                    raw_ingredients = list(
+                        recipe.get("ingredients", [])
+                    )
+                    recipe["raw_ingredients"] = raw_ingredients
+
                     cleaned_ingredients = []
-                    for raw_ingredient in recipe.get("ingredients", []):
+                    for raw_ingredient in raw_ingredients:
                         if not isinstance(raw_ingredient, str):
                             continue
 
                         normalized, alternatives = normalize_recipe_ingredient(
-                            raw_ingredient
+                            raw_ingredient,
+                            preserve_source=True
                         )
 
                         if not normalized:
                             continue
 
-                        if alternatives:
-                            normalized = (
-                                normalized
-                                + " or "
-                                + " or ".join(
-                                    alt.strip()
-                                    for alt in alternatives
-                                    if alt.strip()
+                        # Universal final identity extraction. This strips
+                        # recipe-site metadata without changing the existing
+                        # matching rules.
+                        primary_identity = extract_ingredient_identity(
+                            normalized
+                        )
+
+                        if primary_identity:
+                            normalized = primary_identity
+
+                        # UNIVERSAL PANTRY-STAPLE FILTER
+                        #
+                        # Reuse the existing ingredient matching engine
+                        # and PANTRY_STAPLES definition so web-recipe
+                        # ingestion follows the same staple rules as
+                        # normal recipe matching.
+                        #
+                        # This removes source variants such as:
+                        #   "cooking salt or kosher salt"
+                        #   "lukewarm water"
+                        #   "freshly ground black pepper"
+                        #
+                        # The original source line remains untouched in
+                        # recipe["raw_ingredients"] for quantities,
+                        # measurements, shopping, pricing, and monetization.
+                        if ingredient_matches(
+                            normalized,
+                            list(PANTRY_STAPLES),
+                            allow_pantry_staple=True,
+                        ):
+                            continue
+
+                        # Some recipe sources add a descriptive word to a
+                        # pantry staple, for example:
+                        #   "cooking salt"
+                        #   "lukewarm water"
+                        #
+                        # These are still pantry staples, but the complete
+                        # phrase is not an exact PANTRY_STAPLES entry.
+                        #
+                        # Only remove the ingredient when the staple itself
+                        # is a complete word and removing it leaves only
+                        # descriptive/source wording. This deliberately
+                        # avoids identities such as "water chestnuts" and
+                        # "salted butter".
+                        staple_words = {
+                            word
+                            for staple in PANTRY_STAPLES
+                            for word in re.findall(r'[a-z]+', staple.lower())
+                        }
+
+                        identity_words = normalized.lower().split()
+
+                        if (
+                            identity_words
+                            and any(
+                                word in staple_words
+                                for word in identity_words
+                            )
+                            and all(
+                                word in {
+                                    "cooking",
+                                    "lukewarm",
+                                    "warm",
+                                    "cold",
+                                    "hot",
+                                    "room",
+                                    "temperature",
+                                    "fresh",
+                                    "freshly",
+                                    "ground",
+                                    "cracked",
+                                    "fine",
+                                    "coarse",
+                                    "kosher",
+                                    "sea",
+                                    "table",
+                                }
+                                or word in staple_words
+                                for word in identity_words
+                            )
+                        ):
+                            continue
+
+                        # The normalizer may already have incorporated
+                        # an OR choice directly into the normalized ingredient.
+                        # Do not append the separate alternatives list again
+                        # when that would duplicate the OR choices or reintroduce
+                        # recipe-site metadata.
+                        if alternatives and not re.search(
+                            r'\bor\b',
+                            normalized,
+                            flags=re.IGNORECASE
+                        ):
+                            cleaned_alternatives = []
+
+                            for alternative in alternatives:
+                                alternative = alternative.strip()
+
+                                if not alternative:
+                                    continue
+
+                                # Clean each OR alternative with the same universal
+                                # ingredient normalizer used by the main ingredient.
+                                # Do not require the ingredient to exist in the
+                                # current vocabulary: legitimate ingredients such
+                                # as paprika and chicken stock may not be listed there.
+                                alternative_identity, nested_alternatives = (
+                                    normalize_recipe_ingredient(
+                                        alternative,
+                                        preserve_source=False
+                                    )
                                 )
-                            ).strip()
+
+                                alternative_identity = alternative_identity.strip()
+
+                                if not alternative_identity:
+                                    continue
+
+                                # A normalized alternative that still contains
+                                # instruction-style wording is source metadata,
+                                # not a second ingredient.
+                                metadata_words = {
+                                    "omit",
+                                    "optional",
+                                    "sub",
+                                    "substitute",
+                                    "between",
+                                    "fingers",
+                                    "make",
+                                    "sure",
+                                    "smoke",
+                                    "point",
+                                }
+
+                                alternative_words = set(
+                                    alternative_identity.lower().split()
+                                )
+
+                                if alternative_words & metadata_words:
+                                    continue
+
+                                # Bare descriptive words are not ingredient identities.
+                                if alternative_identity.lower() in {
+                                    "smoky",
+                                    "more",
+                                    "extra",
+                                    "additional",
+                                    "omit",
+                                }:
+                                    continue
+
+                                if alternative_identity.lower() == normalized.lower():
+                                    continue
+
+                                cleaned_alternatives.append(
+                                    alternative_identity
+                                )
+
+                            if cleaned_alternatives:
+                                normalized = (
+                                    normalized
+                                    + " or "
+                                    + " or ".join(
+                                        cleaned_alternatives
+                                    )
+                                ).strip()
 
                         cleaned_ingredients.append(normalized)
 
@@ -3183,7 +4008,7 @@ def search_web_recipes(user_ingredients, count=10):
         print("Brave web search error:", e)
         return []
 
-def normalize_recipe_ingredient(text):
+def normalize_recipe_ingredient(text, preserve_source=False):
     if not text:
         return '', []
 
@@ -3246,6 +4071,16 @@ def normalize_recipe_ingredient(text):
             seasoning_removed,
             flags=re.IGNORECASE,
         )
+
+        # Remove recipe measurement/lead-in words left behind after
+        # salt and pepper themselves have been removed.
+        seasoning_removed = re.sub(
+            r'\b(?:tsp|tbsp|tbs|teaspoons?|tablespoons?|each|of)\b',
+            ' ',
+            seasoning_removed,
+            flags=re.IGNORECASE,
+        )
+
         seasoning_removed = re.sub(r'[^a-z\s]', ' ', seasoning_removed.lower())
         seasoning_removed = re.sub(r'\s+', ' ', seasoning_removed).strip()
         seasoning_removed = re.sub(r'^(?:and|or|,)+\s*|\s*(?:and|or|,)+$', '', seasoning_removed).strip()
@@ -3263,7 +4098,7 @@ def normalize_recipe_ingredient(text):
         r'\s*(?:'
         r'(?:kosher|sea|table|fine\s+sea|coarse\s+sea|fine|coarse)?\s*salt'
         r'|'
-        r'(?:(?:freshly\s+ground|ground|cracked)\s+)?(?:black|white)?\s*pepper'
+        r'(?:(?:freshly[\s-]+ground|ground|cracked)\s+)?(?:black|white)?\s*pepper'
         r')\s+(?:little|pinch|dash|to\s+taste|as\s+needed)?\s*',
         text,
         flags=re.IGNORECASE
@@ -3418,6 +4253,89 @@ def normalize_recipe_ingredient(text):
         flags=re.IGNORECASE
     )
 
+    # Web-recipe ingestion only: after quantities and units are removed,
+    # re-check standalone salt and pepper. This catches source forms such as
+    # "1 tsp kosher salt", "1/2 tsp black pepper", and "1.5 tsp fine sea salt".
+    if preserve_source:
+        if re.fullmatch(
+            r'\s*(?:'
+            r'(?:kosher|sea|table|fine\s+sea|coarse\s+sea|fine|coarse)?\s*salt'
+            r'|'
+            r'(?:(?:freshly[\s-]+ground|ground|cracked)\s+)?'
+            r'(?:black|white)?\s*pepper'
+            r')\s*',
+            text,
+            flags=re.IGNORECASE
+        ):
+            return '', []
+
+    # Web-recipe ingestion only: alternatives were captured before
+    # quantity/unit cleanup, so clean their measurement metadata now.
+    if preserve_source:
+        cleaned_alternatives = []
+
+        for alternative in alternatives:
+            alternative = re.sub(
+                r'\b\d+(?:[./]\d+)?(?:\s*[~\-]\s*\d+(?:[./]\d+)?)?'
+                r'(?:\s*(?:g|gram|grams|kg|kilogram|kilograms|lbs?|pounds?|'
+                r'oz|ounces?|ml|milliliter|milliliters|l|liter|liters|'
+                r'cups?|cup|tbsp|tbs|tablespoons?|tsp|teaspoons?|cloves?|'
+                r'heads?|ea|mass|spoon|spoons|bowl|bowls))?\b',
+                ' ',
+                alternative,
+                flags=re.IGNORECASE
+            )
+
+            alternative = re.sub(
+                r'\b(?:g|gram|grams|kg|kilogram|kilograms|lbs?|pounds?|'
+                r'oz|ounces?|ml|milliliter|milliliters|l|liter|liters|'
+                r'cups?|cup|tbsp|tbs|tablespoons?|tsp|teaspoons?|cloves?|'
+                r'heads?|ea|mass|spoon|spoons|bowl|bowls)\b',
+                ' ',
+                alternative,
+                flags=re.IGNORECASE
+            )
+
+            alternative = re.sub(r'\s+', ' ', alternative).strip()
+
+            if alternative:
+                cleaned_alternatives.append(alternative)
+
+        alternatives = cleaned_alternatives
+
+        # Re-check salt and pepper after quantity/unit cleanup.
+        # This catches source forms such as:
+        # "1/2 tsp each salt and pepper".
+        if (
+            re.search(r'\\bsalt\\b', text)
+            and re.search(r'\\bpepper\\b', text)
+        ):
+            text = re.sub(
+                r'\\b(?:kosher|sea|table|fine\\s+sea|coarse\\s+sea|'
+                r'fine|coarse)?\\s*salt\\b',
+                ' ',
+                text,
+                flags=re.IGNORECASE
+            )
+            text = re.sub(
+                r'\\b(?:(?:freshly\\s+ground|ground|cracked)\\s+)?'
+                r'(?:black|white)?\\s*pepper\\b',
+                ' ',
+                text,
+                flags=re.IGNORECASE
+            )
+            text = re.sub(
+                r'\\b(?:each|and|or|homemade|seasoned|freshly|fresh|'
+                r'ground|cracked|fine|coarse)\\b',
+                ' ',
+                text,
+                flags=re.IGNORECASE
+            )
+            text = re.sub(r'\\s+', ' ', text).strip()
+
+            if not text:
+                return '', []
+
     # Remove trailing recipe unit/measurement metadata that some
     # recipe sites append after the ingredient identity.
     text = re.sub(
@@ -3570,7 +4488,20 @@ def normalize_recipe_ingredient(text):
     text = re.sub(r'\ba\s+sprig\s+(?:of\s+)?thyme\b', 'thyme', text)
 
     # Normalize black pepper to the pantry staple 'pepper'.
-    text = re.sub(r'\b(?:freshly\s+ground|ground)\s+black\s+pepper\b', 'pepper', text)
+    # During web-recipe ingestion, however, pepper is a universal pantry
+    # staple and must never become a recipe requirement.
+    if preserve_source and re.fullmatch(
+        r'\s*(?:freshly[\s-]+ground|ground)\s+black\s+pepper\s*',
+        text,
+        flags=re.IGNORECASE
+    ):
+        return '', []
+
+    text = re.sub(
+        r'\b(?:freshly[\s-]+ground|ground)\s+black\s+pepper\b',
+        'pepper',
+        text
+    )
 
 
     # Remove common recipe wording.
@@ -3669,11 +4600,29 @@ def normalize_recipe_ingredient(text):
     # PLAN A: identify the actual ingredient and ignore recipe metadata.
     # The known-ingredient vocabulary is authoritative; the longest match
     # wins so specific ingredients are preserved over broad parent terms.
-    known_ingredient = extract_known_ingredient(text)
-    if known_ingredient:
-        text = known_ingredient
+    if not preserve_source:
+        known_ingredient = extract_known_ingredient(text)
+        if known_ingredient:
+            text = known_ingredient
 
-    return text, alternatives
+    canonical_text = canonical_ingredient_identity(text)
+
+    canonical_alternatives = []
+
+    for alternative in alternatives:
+        canonical_alternative = canonical_ingredient_identity(
+            alternative
+        )
+
+        if (
+            canonical_alternative
+            and canonical_alternative != canonical_text
+        ):
+            canonical_alternatives.append(
+                canonical_alternative
+            )
+
+    return canonical_text, canonical_alternatives
 
 def normalize_recipe_metadata(value):
     """
@@ -3730,6 +4679,240 @@ def normalize_recipe_metadata(value):
             normalized.append(item)
 
     return normalized
+
+def extract_ingredient_identity(text):
+    """
+    Universal recipe-source ingredient identity extraction.
+
+    The result is the ingredient itself, with quantities, portions,
+    preparation instructions, cooking instructions, editorial notes,
+    and source-metadata fragments removed.
+
+    Meaningful ingredient descriptors are preserved:
+        ground beef
+        lean ground beef
+        grass fed ground beef
+        yellow onion
+        green bell pepper
+        russet potatoes
+        baby portobello mushrooms
+        salmon filets
+
+    Preparation is never allowed to become part of the identity:
+        garlic lightly smashed -> garlic
+        ground beef browned and drained -> ground beef
+        corn cut off the cob -> corn
+        russet potatoes peeled and cubed -> russet potatoes
+    """
+    if not isinstance(text, str):
+        return ""
+
+    cleaned = text.lower().strip()
+    if not cleaned:
+        return ""
+
+    # Decode common HTML entities.
+    cleaned = re.sub(r"&(?:quot|amp|apos|lt|gt);", " ", cleaned)
+
+    # Keep letters and whitespace only. Quantities, fractions, punctuation,
+    # measurements, and source punctuation are not ingredient identity.
+    cleaned = re.sub(r"[^a-z\s]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        return ""
+
+    # These are source/editorial words, not ingredient identity.
+    metadata_words = {
+        "roughly", "rough", "lightly", "heavily",
+        "mixed", "torn", "crushed", "smashed",
+        "divided", "optional", "option", "preferred",
+        "preferably", "desired", "needed", "required",
+        "recommended", "favorite", "favourite",
+        "freshly", "approximately", "about",
+    }
+
+    # Remove standalone metadata words first.
+    words = [
+        word for word in cleaned.split()
+        if word not in metadata_words
+    ]
+    cleaned = " ".join(words).strip()
+
+    if not cleaned:
+        return ""
+
+    # Preparation/instruction boundaries.
+    #
+    # Once one of these begins, everything after it is preparation,
+    # cooking, handling, or editorial explanation rather than ingredient
+    # identity. This deliberately preserves meaningful descriptors before
+    # the boundary, including "ground", "lean", "grass fed", "russet",
+    # "baby", "portobello", etc.
+    preparation_patterns = [
+        r"\bcut\s+(?:into|in|off|from|up)\b",
+        r"\bcut\b",
+        r"\bchop(?:ped|ping)?\b",
+        r"\bdice(?:d|ing)?\b",
+        r"\bslice(?:d|s|ing)?\b",
+        r"\bmince(?:d|ing)?\b",
+        r"\bsmash(?:ed|ing)?\b",
+        r"\bcrush(?:ed|ing)?\b",
+        r"\bpeel(?:ed|ing)?\b",
+        r"\btrim(?:med|ming)?\b",
+        r"\bhalve(?:d|s|ing)?\b",
+        r"\bquarter(?:ed|ing)?\b",
+        r"\bshred(?:ded|ding)?\b",
+        r"\bgrate(?:d|ing)?\b",
+        r"\bchiffonade\b",
+        r"\bjulienne\b",
+        r"\broughly\b",
+        r"\blightly\b",
+        r"\bheavily\b",
+        r"\bbrown(?:ed|ing)?\b",
+        r"\bcook(?:ed|ing)?\b",
+        r"\bboil(?:ed|ing)?\b",
+        r"\bsimmer(?:ed|ing)?\b",
+        r"\broast(?:ed|ing)?\b",
+        r"\bbake(?:d|ing)?\b",
+        r"\bsaute(?:d|ing)?\b",
+        r"\bfry(?:ed|ing)?\b",
+        r"\bsear(?:ed|ing)?\b",
+        r"\bgrill(?:ed|ing)?\b",
+        r"\bdrain(?:ed|ing)?\b",
+        r"\bpat(?:ted)?\s+dry\b",
+        r"\bremove(?:d|s|ing)?\b",
+        r"\bremoved\b",
+        r"\bdiscard(?:ed|ing)?\b",
+        r"\btear(?:n|ing)?\b",
+        r"\bleave(?:s|ing)?\b",
+        r"\bskin(?:ned|ning)?\b",
+        r"\bseed(?:ed|ing)?\b",
+        r"\bcore(?:d|ing)?\b",
+        r"\bso\s+(?:dice|chop|slice|cut|cube|halve|peel|trim)\b",
+    ]
+
+    prep_boundary = re.compile(
+        r"(?:\s+|^)(" + "|".join(preparation_patterns) + r")\b",
+        re.IGNORECASE,
+    )
+
+    # Source/editorial boundaries. Everything after these is explanatory
+    # prose rather than ingredient identity.
+    editorial_patterns = [
+        r"\s+a\s+substitute\b",
+        r"\s+substitute(?:s)?\b",
+        r"\s+sub\b",
+        r"\s+if\s+you\b",
+        r"\s+if\s+they\b",
+        r"\s+if\s+it\b",
+        r"\s+use\s+(?:a|an|the|your|any|some)\b",
+        r"\s+make\s+sure\b",
+        r"\s+with\b",
+        r"\s+from\b",
+        r"\s+so\s+(?:dice|chop|slice|cut|cube|halve|peel|trim)\b",
+    ]
+
+    def clean_part(part):
+        part = part.strip()
+        if not part:
+            return ""
+
+        # Reject obvious non-ingredient fragments immediately.
+        invalid_starts = {
+            "a", "an", "the", "and", "or", "of", "to", "for",
+            "with", "from", "use", "so", "if", "as", "in", "into",
+            "off", "on", "up", "down",
+        }
+
+        if part in invalid_starts:
+            return ""
+
+        if any(part.startswith(prefix + " ") for prefix in invalid_starts):
+            return ""
+
+        # Remove editorial/source explanations.
+        for pattern in editorial_patterns:
+            part = re.sub(
+                pattern + r".*$",
+                "",
+                part,
+                flags=re.IGNORECASE,
+            ).strip()
+
+        if not part:
+            return ""
+
+        # Remove preparation instructions from the first preparation
+        # boundary onward.
+        match = prep_boundary.search(part)
+        if match:
+            part = part[:match.start()].strip()
+
+        if not part:
+            return ""
+
+        # Remove trailing metadata/connective wording.
+        part = re.sub(
+            r"\s+(?:roughly|rough|lightly|heavily|from|and|with|"
+            r"if|so|off|up|down)$",
+            "",
+            part,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        # A valid identity cannot end in a connective or instruction word.
+        if not part or part in invalid_starts:
+            return ""
+
+        # Reject fragments that are clearly source instructions rather than
+        # ingredients.
+        instruction_only = {
+            "dice", "chop", "slice", "cut", "cube", "halve",
+            "peel", "trim", "mince", "smash", "crush",
+            "browned", "cooked", "drained", "removed",
+            "roughly", "rough", "lightly", "heavily",
+            "off", "so", "from", "or",
+        }
+
+        if part in instruction_only:
+            return ""
+
+        # Reject prose-like fragments containing only instruction/editorial
+        # vocabulary. This prevents source text such as "if they re you want
+        # the mushrooms to be the same size" from becoming an ingredient.
+        prose_words = {
+            "if", "they", "you", "want", "the", "same", "size",
+            "make", "sure", "use", "your", "some", "any",
+            "removed", "leaves", "stems", "stem", "roughly",
+            "from", "into", "off",
+        }
+
+        part_words = part.split()
+        if part_words and all(word in prose_words for word in part_words):
+            return ""
+
+        return re.sub(r"\s+", " ", part).strip()
+
+    # Clean OR alternatives independently. Invalid alternatives disappear
+    # instead of becoming fake ingredients.
+    parts = re.split(r"\s+or\s+", cleaned, flags=re.IGNORECASE)
+    identities = []
+
+    for part in parts:
+        identity = clean_part(part)
+        if not identity:
+            continue
+
+        if identity not in identities:
+            identities.append(identity)
+
+    if not identities:
+        return ""
+
+    return canonical_ingredient_identity(
+        " or ".join(identities)
+    )
 
 def extract_known_ingredient(text):
     # Extract the actual known ingredient while ignoring surrounding
@@ -4734,6 +5917,131 @@ def find_recipes(
             continue
 
         # -----------------------------------------------------
+        # UNIVERSAL FINAL RECIPE INGREDIENT CANONICALIZATION
+        # -----------------------------------------------------
+        # This is the final ingredient-identity boundary for find_recipes().
+        #
+        # Every ingredient that reaches matching or the webpage must be an
+        # ingredient identity only:
+        #
+        #   no quantities
+        #   no portions
+        #   no preparation instructions
+        #   no editorial/source wording
+        #   no stray OR fragments
+        #
+        # raw_ingredients remains untouched so source amounts/details are
+        # still available separately.
+        canonical_ingredients = []
+
+        metadata_fragment_words = {
+            "a", "an", "the", "and", "or", "of", "to", "for", "as",
+            "if", "they", "them", "their", "you", "your", "want",
+            "wants", "same", "size", "roughly", "rough", "lightly",
+            "heavily", "freshly", "from", "with", "into", "in",
+            "on", "off", "so", "use", "used", "using", "make",
+            "sure", "removed", "remove", "cut", "cutting", "dice",
+            "diced", "chop", "chopped", "slice", "sliced", "cube",
+            "cubed", "halve", "halved", "quarter", "quartered",
+            "peel", "peeled", "trim", "trimmed", "crush", "crushed",
+            "smash", "smashed", "mix", "mixed", "stir", "stirred",
+            "toss", "tossed", "drain", "drained", "rinse", "rinsed",
+            "cook", "cooked", "bake", "baked", "boil", "boiled",
+            "roast", "roasted", "saute", "sauteed", "sauté",
+            "sautéed", "serve", "served", "serving", "optional",
+            "divided", "plus", "more", "extra", "additional",
+            "for", "taste", "garnish", "zest"
+        }
+
+        for raw_ingredient in recipe.get("ingredients", []):
+            if not isinstance(raw_ingredient, str):
+                continue
+
+            normalized, _ = normalize_recipe_ingredient(
+                raw_ingredient,
+                preserve_source=True
+            )
+
+            if not normalized:
+                continue
+
+            # A recipe source can contain "or" inside preparation prose.
+            # Evaluate each OR side independently and retain only sides that
+            # resolve to a real ingredient identity.
+            or_parts = [
+                part.strip(" ,")
+                for part in re.split(
+                    r"\s+or\s+",
+                    normalized,
+                    flags=re.IGNORECASE
+                )
+                if part.strip(" ,")
+            ]
+
+            identities = []
+
+            for part in or_parts:
+                identity = extract_ingredient_identity(part)
+
+                if not identity:
+                    # Exact vocabulary extraction is a safe fallback for
+                    # legitimate ingredients not fully recognized by the
+                    # broader identity extractor.
+                    identity = extract_known_ingredient(part)
+
+                if not identity:
+                    # Preserve legitimate unknown ingredients, but never
+                    # preserve a fragment made entirely from recipe-source
+                    # preparation/connective wording.
+                    words = part.lower().split()
+
+                    if (
+                        not words
+                        or all(word in metadata_fragment_words for word in words)
+                    ):
+                        continue
+
+                    identity = part.strip()
+
+                identity = re.sub(r"\s+", " ", identity).strip(" ,")
+
+                if not identity:
+                    continue
+
+                # Remove a final source/preparation tail if one survived
+                # the vocabulary extraction.
+                identity = extract_ingredient_identity(identity) or identity
+                identity = re.sub(r"\s+", " ", identity).strip(" ,")
+
+                if not identity:
+                    continue
+
+                if identity.lower() not in {
+                    existing.lower() for existing in identities
+                }:
+                    identities.append(identity)
+
+            if not identities:
+                continue
+
+            canonical = " or ".join(identities)
+
+            # Pantry staples never become recipe requirements.
+            if ingredient_matches(
+                canonical,
+                list(PANTRY_STAPLES),
+                allow_pantry_staple=True
+            ):
+                continue
+
+            canonical_ingredients.append(canonical)
+
+        recipe["ingredients"] = canonical_ingredients
+
+        if not canonical_ingredients:
+            continue
+
+        # -----------------------------------------------------
         # HARD HEALTHY DIET FILTER
         # -----------------------------------------------------
         # Healthy is a true eligibility filter. A recipe must have
@@ -4837,10 +6145,7 @@ def find_recipes(
                 if non_vegan_ingredients:
                     continue
 
-        recipe_ingredients = recipe.get(
-            "ingredients",
-            []
-        )
+        recipe_ingredients = canonical_ingredients
 
         if not recipe_ingredients:
             continue
@@ -4852,6 +6157,12 @@ def find_recipes(
         # let those incompatible pantry proteins count as missing or
         # otherwise affect the recipe's pantry matching.
         matching_pantry = list(user_ingredients or [])
+
+        # Track whether Vegan filtering removed one of the user's
+        # explicitly selected animal proteins. That protein cannot
+        # count as a pantry match for a vegan recipe, but it is still
+        # the user's intended recipe-search ingredient.
+        vegan_incompatible_pantry_removed = False
 
         if selected_diet == "vegan":
             animal_pantry_items = {
@@ -4868,6 +6179,16 @@ def find_recipes(
                 for item in values
             )
 
+            # Recognize ordinary plural forms of the established
+            # meat vocabulary for Vegan pantry filtering only.
+            # This does not change ingredient_matches() or the
+            # application's established meat hierarchy.
+            for meat_item in list(animal_pantry_items):
+                if meat_item.endswith("s"):
+                    animal_pantry_items.add(
+                        meat_item[:-1]
+                    )
+
             filtered_pantry = []
 
             for pantry_item in matching_pantry:
@@ -4879,6 +6200,7 @@ def find_recipes(
                 )
 
                 if normalized_pantry in animal_pantry_items:
+                    vegan_incompatible_pantry_removed = True
                     continue
 
                 filtered_pantry.append(pantry_item)
@@ -4897,23 +6219,48 @@ def find_recipes(
         if not pantry_result:
             continue
 
-        matched = [
-            item["ingredient"]
-            for item in pantry_result.get(
-                "have",
-                []
+        # -----------------------------------------------------
+        # FINAL UNIVERSAL INGREDIENT-IDENTITY DISPLAY GUARD
+        # -----------------------------------------------------
+        # Matching is already complete at this point.
+        #
+        # From here forward, the application must expose ingredient
+        # identity only. Never allow recipe-source wording, quantities,
+        # preparation instructions, quality descriptors, or other
+        # metadata to leak into Have/Need.
+        #
+        # This is a display/output boundary only. It does NOT alter
+        # matching, scoring, the meat hierarchy, OR alternatives,
+        # pantry-staple rules, or any other established matching logic.
+        # -----------------------------------------------------
+
+        matched = []
+
+        for item in pantry_result.get(
+            "have",
+            []
+        ):
+            identity = canonical_ingredient_identity(
+                item.get("ingredient", "")
             )
-        ]
+
+            if identity:
+                matched.append(identity)
 
         missing_items = pantry_result.get(
             "missing",
             []
         )
 
-        missing = [
-            item["ingredient"]
-            for item in missing_items
-        ]
+        missing = []
+
+        for item in missing_items:
+            identity = canonical_ingredient_identity(
+                item.get("ingredient", "")
+            )
+
+            if identity:
+                missing.append(identity)
 
         # Build the substitution display used by
         # the existing webpage.
@@ -4966,7 +6313,10 @@ def find_recipes(
         # of the user's ingredients.
         used_count = len(matched)
 
-        if used_count == 0:
+        if used_count == 0 and not (
+            selected_diet == "vegan"
+            and vegan_incompatible_pantry_removed
+        ):
             continue
 
         total_count = (
@@ -6529,6 +7879,28 @@ def home():
             user_ingredients.extend(
                 selected_common
             )
+
+            user_ingredients = [
+                canonical_ingredient_identity(item)
+                for item in user_ingredients
+            ]
+
+            user_ingredients = [
+                item
+                for item in user_ingredients
+                if item
+            ]
+
+            selected_common = [
+                canonical_ingredient_identity(item)
+                for item in selected_common
+            ]
+
+            selected_common = [
+                item
+                for item in selected_common
+                if item
+            ]
 
             # Create a clean payload array incorporating user lifestyle and ethnic choices.
             # Pantry ingredients incompatible with the selected diet must not influence

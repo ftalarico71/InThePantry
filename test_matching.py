@@ -28,15 +28,15 @@ def test_normalize_recipe_ingredient():
 
 def test_ingredient_matching():
     cases = [
-        ("salt", ["salt"], True),
+        ("salt", ["salt"], False),
         ("salt", ["kosher salt"], False),
-        ("kosher salt", ["salt"], True),
-        ("kosher salt", ["kosher salt"], True),
-        ("pepper", ["pepper"], True),
+        ("kosher salt", ["salt"], False),
+        ("kosher salt", ["kosher salt"], False),
+        ("pepper", ["pepper"], False),
         ("pepper", ["black pepper"], False),
-        ("black pepper", ["pepper"], True),
-        ("black pepper", ["black pepper"], True),
-        ("ground pepper", ["pepper"], True),
+        ("black pepper", ["pepper"], False),
+        ("black pepper", ["black pepper"], False),
+        ("ground pepper", ["pepper"], False),
         ("boneless chicken breast", ["chicken"], True),
         ("boneless chicken breast", ["boneless chicken breast"], True),
         ("ground chicken", ["chicken"], False),
