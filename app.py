@@ -971,10 +971,18 @@ def canonical_ingredient_identity(text):
         text,
         flags=re.IGNORECASE,
     )
+    # Remove standalone preparation metadata left by phrases such as
+    # "green parts only" or "white parts only".
+    text = re.sub(
+        r"\bonly\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
 
     # Editorial preference wording is not ingredient identity.
     text = re.sub(
-        r"\bif\s+you\s+prefer\b",
+        r"\b(?:if\s+)?you\s+prefer\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -3784,18 +3792,6 @@ def user_facing_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
-    # Remove common meat cut / quality wording from the user-facing
-    # identity. Internal matching still retains these distinctions.
-    value = re.sub(
-        r"\b(?:sirloin|ribeye|rib\s+eye|strip|new\s+york|"
-        r"tenderloin|filet|fillet|chuck|round|"
-        r"short\s+ribs?|flank|skirt|top\s+round|"
-        r"bottom\s+round)\b",
-        " ",
-        value,
-        flags=re.IGNORECASE,
-    )
-
     # User-facing ingredient identity is singular where the plural
     # adds no ingredient distinction.
     if value.strip().lower() == "steaks":
@@ -4167,10 +4163,11 @@ def match_recipe_to_pantry(recipe, pantry_items):
             if not stripped:
                 continue
 
-            # Split comma-separated recipe ingredients normally.
-            # OR alternatives are handled separately by the normalizer.
-            comma_parts = re.split(r'\s*,\s*', stripped)
-
+            # A comma normally separates ingredient metadata from the
+            # ingredient identity, not separate recipe ingredients.
+            # Keep the complete entry intact and let the universal
+            # identity normalizer remove metadata.
+            comma_parts = [stripped]
 
             for comma_part in comma_parts:
                 text = comma_part.strip()
