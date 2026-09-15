@@ -93,7 +93,7 @@ CORE_INGREDIENTS = {
         "ground beef",
         "lean ground beef",
         "beef chuck",
-        "beef chuck roast", "beef brisket",
+        "beef chuck roast", "chuck roast", "beef brisket",
         "beef shank",
         "beef steak",
         "beef roast",
@@ -502,7 +502,7 @@ COMMON_INGREDIENTS = {
         "beef chuck",
         "beef brisket",
         "beef steak",
-        "beef roast",
+        "chuck roast",
         "beef stew meat",
         "ground pork",
         "pork chop",
@@ -592,7 +592,7 @@ MEAT_GROUPS = {
         "beef chuck",
         "beef brisket",
         "beef steak",
-        "beef roast",
+        "chuck roast",
         "beef stew meat",
     ],
 
@@ -2392,7 +2392,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
     meat_parents = {
         "beef": {
-            "beef", "beef chuck", "beef chuck roast", "beef brisket", "beef shank",
+            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "beef shank",
             "beef steak", "beef roast", "roast beef", "beef stew meat",
             "beef short ribs", "beef tenderloin", "beef sirloin",
             "steak", "ribeye", "ribeyes", "rib eye", "rib eyes",
