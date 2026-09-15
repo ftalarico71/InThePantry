@@ -741,6 +741,50 @@ def canonical_ingredient_identity(text):
     if not text:
         return ""
 
+    # Remove leading scraped measurement / serving metadata that can
+    # remain after punctuation and numeric quantities have been stripped.
+    #
+    # Examples:
+    #   "cm piece ginger"      -> "ginger"
+    #   "fl oz chicken stock" -> "chicken stock"
+    #   "piece ginger"         -> "ginger"
+    #   "pinch of salt"        -> "salt"
+    text = re.sub(
+        r"^\s*(?:"
+        r"fl\s+oz|"
+        r"oz|"
+        r"kg|"
+        r"grams?|g|"
+        r"ml|"
+        r"liters?|litres?|l|"
+        r"cm|mm|"
+        r"inches?|inch|in"
+        r")\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"^\s*(?:"
+        r"pinch|dash|handful|"
+        r"cloves?|heads?|bunches?|"
+        r"pieces?|stalks?|sprigs?|"
+        r"cans?|packages?|sticks?"
+        r")\s+(?:of\s+)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove a remaining leading "of" left by scraped serving wording.
+    text = re.sub(
+        r"^\s*of\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     # Handle explicit OR alternatives independently.
     if " or " in text:
         parts = []
@@ -5202,6 +5246,106 @@ def extract_ingredient_identity(text):
     cleaned = re.sub(r"[^a-z\s]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
+    # Remove leading scraped measurement and serving metadata that remains
+    # after punctuation/numeric cleanup.
+    #
+    # Examples:
+    #   "20–50ml/¾–2fl oz chicken stock" -> "chicken stock"
+    #   "1cm/½in piece ginger" -> "ginger"
+    #   "pinch of salt" -> "salt"
+    cleaned = re.sub(
+        r"^\s*(?:"
+        r"fl\s+oz|"
+        r"oz|"
+        r"kg|"
+        r"grams?|g|"
+        r"ml|"
+        r"liters?|litres?|l|"
+        r"cm|mm|"
+        r"inches?|inch|in"
+        r")\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(
+        r"^\s*(?:"
+        r"pinch|dash|handful|"
+        r"cloves?|heads?|bunches?|"
+        r"pieces?|stalks?|sprigs?|"
+        r"cans?|packages?|sticks?"
+        r")\s+(?:of\s+)?",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(
+        r"^\s*of\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        return ""
+
+    # FINAL UNIVERSAL METADATA CLEANUP
+    #
+    # Source sites can leave measurement fragments behind after numeric
+    # characters and punctuation have been stripped. Remove the complete
+    # leading metadata chain before identity extraction.
+    #
+    # Examples:
+    #   "For the chicken: chicken breasts" -> "chicken breasts"
+    #   "fl chicken stock" -> "chicken stock"
+    #   "in piece ginger" -> "ginger"
+    #   "cm in piece ginger" -> "ginger"
+    #   "pinch of salt" -> "salt"
+    cleaned = re.sub(
+        r"^\s*(?:"
+        r"(?:for|with)\s+(?:the\s+)?[a-z\s-]+?\s+"
+        r"|"
+        r"(?:fl\s+oz|oz|kg|grams?|g|ml|liters?|litres?|l|"
+        r"cm|mm|inches?|inch|in|"
+        r"pinch|dash|handful|cloves?|heads?|bunches?|pieces?|"
+        r"stalks?|sprigs?|cans?|packages?|sticks?)\s+"
+        r")",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    previous = None
+    while cleaned != previous:
+        previous = cleaned
+
+        cleaned = re.sub(
+            r"^\s*(?:"
+            r"fl\s+oz|oz|kg|grams?|g|ml|liters?|litres?|l|"
+            r"cm|mm|inches?|inch|in|"
+            r"pinch|dash|handful|cloves?|heads?|bunches?|pieces?|"
+            r"stalks?|sprigs?|cans?|packages?|sticks?"
+            r")\s+",
+            "",
+            cleaned,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        cleaned = re.sub(
+            r"^\s*of\s+",
+            "",
+            cleaned,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
     if not cleaned:
         return ""
 
@@ -5213,7 +5357,7 @@ def extract_ingredient_identity(text):
         "preferably", "desired", "needed", "required",
         "recommended", "favorite", "favourite",
         "freshly", "approximately", "about",
-        "quick", "additional", "extra", "included",
+        "quick", "additional", "included",
         "separate", "separately", "remaining",
     }
 
