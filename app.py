@@ -950,23 +950,23 @@ def canonical_ingredient_identity(text):
     # editorial preference. They are not ingredient identity.
 
     text = re.sub(
-        r"\\b(?:inch|in)\\s+(?:thick|thin)\\b",
+        r"\b(?:inch|in)\s+(?:thick|thin)\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
 
     text = re.sub(
-        r"\\b(?:thick|thin|roughly|finely|coarsely|"
-        r"green|white|light|dark)\\s+"
-        r"(?:parts?|pieces?|sections?)\\b",
+        r"\b(?:thick|thin|roughly|finely|coarsely|"
+        r"green|white|light|dark)\s+"
+        r"(?:parts?|pieces?|sections?)\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
 
     text = re.sub(
-        r"\\b(?:thick|thin|tender|roughly|finely|coarsely)\\b",
+        r"\b(?:thick|thin|tender|roughly|finely|coarsely)\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -974,21 +974,21 @@ def canonical_ingredient_identity(text):
 
     # Editorial preference wording is not ingredient identity.
     text = re.sub(
-        r"\\bif\\s+you\\s+prefer\\b",
+        r"\bif\s+you\s+prefer\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
 
     text = re.sub(
-        r"\\b(?:as\\s+desired|as\\s+you\\s+prefer|"
-        r"if\\s+desired|optional|to\\s+your\\s+taste)\\b",
+        r"\b(?:as\s+desired|as\s+you\s+prefer|"
+        r"if\s+desired|optional|to\s+your\s+taste)\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
 
-    text = re.sub(r"\\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
 
     # Preparation/instruction wording starts the non-identity tail.
     text = re.sub(
