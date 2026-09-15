@@ -1901,11 +1901,34 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
     def singular(word):
         word = clean_word(word)
-        if word.endswith("ies"):
-            return word[:-3] + "y"
-        if word.endswith("s") and not word.endswith("ss"):
-            return word[:-1]
-        return word
+
+        if not word:
+            return word
+
+        parts = word.split()
+        last = parts[-1]
+
+        if last.endswith("ies"):
+            last = last[:-3] + "y"
+        elif last.endswith("ves"):
+            irregular_v_to_f = {
+                "leaves": "leaf",
+                "wives": "wife",
+                "knives": "knife",
+                "lives": "life",
+                "halves": "half",
+                "selves": "self",
+                "wolves": "wolf",
+                "calves": "calf",
+                "loaves": "loaf",
+                "shelves": "shelf",
+            }
+            last = irregular_v_to_f.get(last, last[:-1])
+        elif last.endswith("s") and not last.endswith("ss"):
+            last = last[:-1]
+
+        parts[-1] = last
+        return " ".join(parts)
 
     # -------------------------------------------------------------
     # FAST CORE INGREDIENT LOOKUP
@@ -4921,7 +4944,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
 
 
     text = re.sub(
-        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|leaf|leaves|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
+        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
         ' ',
         text,
         flags=re.IGNORECASE
@@ -5190,6 +5213,8 @@ def extract_ingredient_identity(text):
         "preferably", "desired", "needed", "required",
         "recommended", "favorite", "favourite",
         "freshly", "approximately", "about",
+        "quick", "additional", "extra", "included",
+        "separate", "separately", "remaining",
     }
 
     # Remove standalone metadata words first.
@@ -5245,7 +5270,6 @@ def extract_ingredient_identity(text):
         r"\bremoved\b",
         r"\bdiscard(?:ed|ing)?\b",
         r"\btear(?:n|ing)?\b",
-        r"\bleave(?:s|ing)?\b",
         r"\bskin(?:ned|ning)?\b",
         r"\bseed(?:ed|ing)?\b",
         r"\bcore(?:d|ing)?\b",
