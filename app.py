@@ -1398,110 +1398,13 @@ def _get_core_ingredient_lookups(singular_fn):
     return _CORE_LOOKUP_CACHE
 
 def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
-    canonical_recipe = canonical_ingredient_identity(
-        recipe_ingredient
-    )
 
-    if not canonical_recipe:
-        return False
-
-    recipe_ingredient = canonical_recipe
-
-    canonical_users = []
-
-    for user_item in (user_ingredients or []):
-        canonical_user = canonical_ingredient_identity(
-            user_item
-        )
-
-        if canonical_user:
-            canonical_users.append(
-                canonical_user
-            )
-
-    user_ingredients = canonical_users
-
+    original_user_names = [
+        clean_word(item)
+        for item in (user_ingredients or [])
+        if clean_word(item)
+    ]
     original_recipe_name = clean_word(recipe_ingredient)
-
-    # -----------------------------------------------------
-    # UNIVERSAL VEGAN / PLANT-BASED SEPARATION
-    # -----------------------------------------------------
-    # Vegan and plant-based versions may match each other.
-    # They must remain separate from ordinary animal ingredients.
-    # Ordinary ingredients with no dietary qualifier are unaffected.
-    # -----------------------------------------------------
-    recipe_is_plant_based = bool(
-        re.search(r"\bvegan\b", original_recipe_name)
-        or re.search(r"\bplant\s+based\b", original_recipe_name)
-    )
-
-    for raw_user_item in user_ingredients or []:
-        raw_user_name = clean_word(raw_user_item)
-        if not raw_user_name:
-            continue
-
-        user_is_plant_based = bool(
-            re.search(r"\bvegan\b", raw_user_name)
-            or re.search(r"\bplant\s+based\b", raw_user_name)
-        )
-
-        # Only enforce dietary separation when at least one side
-        # explicitly identifies itself as vegan/plant-based.
-        if recipe_is_plant_based or user_is_plant_based:
-            if recipe_is_plant_based != user_is_plant_based:
-                continue
-
-        # The compatible pantry item stays in the normal matching flow.
-        # Do not remove ordinary pantry ingredients from the list.
-
-
-    # Preparation-state phrases containing "pasta" are not
-    # standalone pasta ingredients.
-    pasta_preparation_phrases = {
-        "boiling pasta",
-        "cooking pasta",
-        "cooked pasta",
-        "uncooked pasta",
-        "prepared pasta",
-        "drained pasta",
-        "reserved pasta",
-    }
-
-    if original_recipe_name in pasta_preparation_phrases:
-        return False
-
-    # Preserve butter direction before normalization collapses variants.
-    #
-    # Generic pantry "butter" can satisfy a specific recipe butter.
-    # Specific pantry butter variants cannot satisfy generic recipe
-    # "butter" or substitute for another specific butter variant.
-    butter_variants = {
-        "butter",
-        "salted butter",
-        "unsalted butter",
-        "stick butter",
-        "unsalted butter chilled",
-    }
-
-    if original_recipe_name in butter_variants:
-        for x in (user_ingredients or []):
-            user_raw = clean_word(x)
-
-            if user_raw not in butter_variants:
-                continue
-
-            # Exact same butter ingredient is valid.
-            if user_raw == original_recipe_name:
-                return True
-
-            # Generic pantry butter can satisfy a specific recipe butter.
-            if original_recipe_name != "butter" and user_raw == "butter":
-                return True
-
-            # Specific pantry butter cannot satisfy generic recipe butter
-            # or substitute for another specific butter variant.
-            return False
-
 
     recipe_name = clean_word(recipe_ingredient)
     if not recipe_name:
@@ -1588,9 +1491,16 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
                 continue
 
     # Preserve pepper direction before normalization collapses variants.
-    # Generic pantry pepper can satisfy any recognized specific pepper
-    # variant, but specific pepper variants cannot satisfy generic pepper
-    # or substitute for one another.
+    # Generic and specific pepper variants are interchangeable only in
+    # the generic/specific direction:
+    #
+    #   pepper + black pepper = TRUE
+    #   black pepper + pepper = TRUE
+    #
+    # Specific variants never substitute for one another:
+    #
+    #   black pepper + white pepper = FALSE
+    #   red pepper + green pepper = FALSE
     pepper_variants = {
         "pepper",
         "bell pepper", "red pepper", "green pepper",
@@ -1598,10 +1508,22 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         "black pepper", "white pepper",
     }
 
-    if original_recipe_name in pepper_variants:
-        for x in (user_ingredients or []):
-            user_raw = clean_word(x)
+    # Standalone seasoning pepper is a pantry staple.
+    # Vegetable pepper varieties such as bell/red/green/yellow/orange
+    # pepper remain real ingredients and must use the existing
+    # pepper-variant hierarchy.
+    seasoning_pepper_variants = {
+        "pepper",
+        "black pepper",
+        "white pepper",
+    }
 
+    if original_recipe_name in seasoning_pepper_variants:
+        return False
+
+
+    if original_recipe_name in pepper_variants:
+        for user_raw in original_user_names:
             if user_raw not in pepper_variants:
                 continue
 
@@ -1609,12 +1531,14 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
             if user_raw == original_recipe_name:
                 return True
 
-            # Generic pantry pepper can satisfy a specific recipe pepper.
-            if original_recipe_name != "pepper" and user_raw == "pepper":
+            # Generic pepper and a specific pepper variant are compatible.
+            if original_recipe_name == "pepper":
                 return True
 
-            # Specific pantry pepper cannot satisfy generic recipe pepper
-            # or substitute for another specific pepper variant.
+            if user_raw == "pepper":
+                return True
+
+            # Different specific pepper variants never substitute.
             return False
 
     # Preserve salt direction before broad core matching collapses variants.
@@ -1974,6 +1898,12 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     if allow_pantry_staple and recipe_name in PANTRY_STAPLES:
         return True
 
+    # Standalone seasoning pepper is a pantry staple, not a
+    # direct ingredient match. Compound salt-and-pepper handling
+    # is handled separately and must remain unaffected.
+    if recipe_name in {"pepper", "black pepper", "white pepper"}:
+        return False
+
     def singular(word):
         word = clean_word(word)
 
@@ -2079,13 +2009,6 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
                         best_descriptive_core = core_name
                         best_descriptive_length = match_length
 
-                if (
-                    len(variant_words) == 1
-                    and singular(candidate[0]) == singular(variant)
-                ):
-                    if best_descriptive_length < 1:
-                        best_descriptive_core = core_name
-                        best_descriptive_length = 1
 
         if best_descriptive_core:
             _FIND_CORE_CACHE[cache_key] = best_descriptive_core
@@ -2100,6 +2023,32 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     compound_product = bool(re.search(r"\bdipping\s+oil\b", recipe_name))
 
     recipe_core = None if compound_product else find_core(recipe_name)
+
+    # A single-word recipe ingredient must not match a longer
+    # pantry ingredient merely because the pantry ingredient
+    # contains that word.
+    #
+    # Examples:
+    #   egg + egg drop soup     -> FALSE
+    #   chicken + chicken broth -> FALSE
+    #   beef + beef broth       -> FALSE
+    #
+    # Exact ingredient identity and explicit ingredient variants
+    # continue through the normal matching logic below.
+    if (
+        recipe_core is not None
+        and len(recipe_name.split()) == 1
+    ):
+        for raw_user_item in (user_ingredients or []):
+            user_name = clean_word(raw_user_item)
+
+            if not user_name or len(user_name.split()) <= 1:
+                continue
+
+            user_core = find_core(user_name)
+
+            if user_core == recipe_core:
+                return False
 
     # -----------------------------------------------------
     # COMPOUND INGREDIENT COMPONENT MATCHING
@@ -2193,12 +2142,86 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
                 if core_name in compound_component_cores:
                     break
 
-        # Generic oil is only a valid compound component when the recipe
-        # ingredient also contains another recognized ingredient component.
-        # This prevents specific oils such as "truffle oil" from matching
-        # pantry "olive oil" merely because both resolve to the broad "oil" core.
-        if compound_component_cores == {"oil"}:
-            compound_component_cores.clear()
+        # A compound ingredient must contain at least two recognized
+        # ingredient components before component matching is allowed.
+        #
+        # This prevents a single known ingredient from being extracted
+        # from a different named ingredient or product:
+        #
+        #   egg drop soup  -> egg       FALSE
+        #   chicken broth  -> chicken   FALSE
+        #   beef broth     -> beef      FALSE
+        #   tomato sauce   -> tomato    FALSE
+        #
+        # Legitimate multi-component products remain eligible:
+        #   garlic butter sauce
+        #   parmesan garlic sauce
+        #   chili garlic oil
+        if len(compound_component_cores) < 2:
+            # A single detected component is valid only when the
+            # entire recipe ingredient is that component.
+            #
+            # Examples:
+            #   egg -> egg                 VALID
+            #   egg drop soup -> egg       INVALID
+            #   tomato sauce -> tomato     INVALID
+            #   bell pepper -> bell pepper VALID
+            #
+            # This prevents a named ingredient from being satisfied
+            # merely because it contains the name of another ingredient.
+            #
+            # Multi-component products remain eligible:
+            #   garlic butter sauce
+            #   parmesan garlic sauce
+            #   chili garlic oil
+            pepper_variant_terms = {
+                "pepper",
+                "bell pepper",
+                "red pepper",
+                "green pepper",
+                "yellow pepper",
+                "orange pepper",
+                "red bell pepper",
+                "green bell pepper",
+                "yellow bell pepper",
+                "orange bell pepper",
+                "black pepper",
+                "white pepper",
+            }
+
+            recipe_clean = clean_word(recipe_name)
+            recipe_core_clean = clean_word(recipe_core or "")
+
+            pepper_variant_match = (
+                recipe_clean in pepper_variant_terms
+                and recipe_core_clean in pepper_variant_terms
+                and (
+                    "pepper" in recipe_clean
+                    or "pepper" in recipe_core_clean
+                )
+            )
+
+            if not compound_component_cores:
+                compound_component_cores.clear()
+
+            elif (
+                recipe_clean != recipe_core_clean
+                and not pepper_variant_match
+            ):
+                compound_component_cores.clear()
+
+                # The recognized component was only an embedded word
+                # inside a different named ingredient. Do not allow the
+                # shortened core to fall through into normal core matching.
+                #
+                # Examples:
+                #   egg drop soup -> egg       BLOCKED
+                #   chicken broth -> chicken   BLOCKED
+                #   tomato sauce -> tomato     BLOCKED
+                #
+                # The actual recipe ingredient must match as itself.
+                recipe_core = None
+
 
         if compound_component_cores:
             for user_item in user_ingredients or []:
@@ -2268,7 +2291,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
                     )
 
                     if recipe_pepper_variant == "pepper":
-                        if user_name != "pepper":
+                        if user_name not in compound_pepper_variants:
                             continue
                     elif recipe_pepper_variant:
                         if user_name == "pepper" or user_name == recipe_pepper_variant:
@@ -2311,7 +2334,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
                         )
 
                         if recipe_pepper_variant == "pepper":
-                            if user_name == "pepper":
+                            if user_name in compound_pepper_variants:
                                 return True
                             continue
 
@@ -3948,7 +3971,8 @@ def match_recipe_to_pantry(recipe, pantry_items):
         for part in parts:
             normalized, alternatives = (
                 normalize_recipe_ingredient(
-                    part
+                    part,
+                    preserve_source=True,
                 )
             )
 
