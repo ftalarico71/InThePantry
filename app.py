@@ -783,6 +783,38 @@ def canonical_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
+    # Universal brisket identity cleanup.
+    # Scraped recipe descriptions such as:
+    #   untrimmed brisket
+    #   whole packer brisket
+    #   packer brisket
+    # all represent the same ingredient identity: brisket.
+    text = re.sub(
+        r"\b(?:whole\s+packer|packer|untrimmed)\s+(?=brisket\b)",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # All beef-brisket naming variants share the same user-facing
+    # ingredient identity: brisket.
+    if re.fullmatch(r"(?:beef\s+)?brisket", text, flags=re.IGNORECASE):
+        return "brisket"
+
+    # Scraped seasoning metadata can leave the descriptor "coarse"
+    # behind after the actual salt/pepper ingredient has been removed.
+    # "coarse" by itself is never a required ingredient.
+    if re.fullmatch(r"coarse", text, flags=re.IGNORECASE):
+        return ""
+
+    # Scraped seasoning metadata can also leave "coarse pepper"
+    # behind after pepper has been identified as a pantry staple.
+    if re.fullmatch(r"coarse\s+pepper", text, flags=re.IGNORECASE):
+        return ""
+
     # Handle explicit OR alternatives independently.
     if " or " in text:
         parts = []
