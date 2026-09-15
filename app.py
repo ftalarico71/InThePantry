@@ -1101,6 +1101,7 @@ def canonical_ingredient_identity(text):
         "carrots": "carrot",
         "potatoes": "potato",
         "mushrooms": "mushroom",
+        "eggs": "egg",
         "bell peppers": "bell pepper",
         "green onions": "green onion",
         "red onions": "red onion",
@@ -3672,6 +3673,122 @@ def get_sensible_substitutions(ingredient):
 
     return substitutions.get(substitution_key, [])
 
+def user_facing_ingredient_identity(text):
+    """
+    Final UI-only ingredient cleanup.
+
+    The matching engine keeps meaningful internal distinctions.
+    This layer removes recipe-source wording that is not part of
+    the ingredient identity shown to the user.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    value = text.strip().lower()
+    if not value:
+        return ""
+
+    # Reuse the universal canonical identity first.
+    value = canonical_ingredient_identity(value)
+    if not value:
+        return ""
+
+    # Remove common preparation / service wording that can survive
+    # canonical cleanup.
+    value = re.sub(
+        r"\b(?:green\s+parts?\s+only|white\s+parts?\s+only|"
+        r"tender|thick|thin|roughly|finely|coarsely|"
+        r"for\s+drizzling|for\s+garnish|for\s+serving|"
+        r"as\s+needed|to\s+taste)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove common meat cut / quality wording from the user-facing
+    # identity. Internal matching still retains these distinctions.
+    value = re.sub(
+        r"\b(?:sirloin|ribeye|rib\s+eye|strip|new\s+york|"
+        r"tenderloin|filet|fillet|chuck|round|"
+        r"short\s+ribs?|flank|skirt|top\s+round|"
+        r"bottom\s+round)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # User-facing ingredient identity is singular where the plural
+    # adds no ingredient distinction.
+    if value.strip().lower() == "steaks":
+        value = "steak"
+
+    # Remove scraped measurement abbreviations that can survive
+    # earlier normalization when they appear directly before an
+    # ingredient identity.
+    value = re.sub(
+        r"^c\s+(?=[a-z])",
+        "",
+        value,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    # Universal breadcrumb identity.
+    value = re.sub(
+        r"\b(?:panko\s+)?bread\s+crumbs?\b",
+        "breadcrumbs",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Leaf / greens wording is not a separate ingredient identity.
+    value = re.sub(
+        r"\bcilantro\s+leaves?\b",
+        "cilantro",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove common preparation descriptors from rice.
+    if re.search(r"\brice\b", value, flags=re.IGNORECASE):
+        value = re.sub(
+            r"\b(?:quick\s+cooking|quick\s+cook|instant|"
+            r"long\s+grain|short\s+grain|medium\s+grain|"
+            r"brown|white|basmati|jasmine)\b",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = "rice"
+
+    # Cheese variety is not ingredient identity for the UI.
+    if re.search(r"\bcheese\b", value, flags=re.IGNORECASE):
+        value = "cheese"
+
+    # Oil preparation/source wording is not ingredient identity.
+    if re.search(r"\bolive\s+oil\b", value, flags=re.IGNORECASE):
+        value = "olive oil"
+
+    # Cooking oil remains one ingredient.
+    if re.fullmatch(r"(?:cooking|generic)\s+oil", value, flags=re.IGNORECASE):
+        value = "oil"
+
+    # Remove remaining standalone descriptive words that are not
+    # ingredient identity.
+    value = re.sub(
+        r"\b(?:homemade|housemade|homemade-style|"
+        r"freshly|fresh|prepared|quick|slow|"
+        r"cooking|extra|robusto|preferred|preferably)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    value = re.sub(r"\s+", " ", value).strip()
+
+    return value
+
+
 def match_recipe_to_pantry(recipe, pantry_items):
     if not recipe:
         return None
@@ -3900,7 +4017,13 @@ def match_recipe_to_pantry(recipe, pantry_items):
         # Skip standard pantry staples entirely from having or missing counts
         # Force combined staple and spice strings to separate cleanly from total scores
         if matches(name) or contextual_match or ingredient_matches(name, list(pantry)):
-            have.append({"ingredient": name, "original": info["original"], "status": "have"})
+            display_name = user_facing_ingredient_identity(name)
+            if display_name:
+                have.append({
+                    "ingredient": display_name,
+                    "original": info["original"],
+                    "status": "have"
+                })
             continue
 
         found_alternative = None
@@ -3926,13 +4049,15 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 )
             })
         else:
-            missing.append({
-                "ingredient": name,
-                "original": info["original"],
-                "substitutions": get_sensible_substitutions(
-                    name
-                )
-            })
+            display_name = user_facing_ingredient_identity(name)
+            if display_name:
+                missing.append({
+                    "ingredient": display_name,
+                    "original": info["original"],
+                    "substitutions": get_sensible_substitutions(
+                        name
+                    )
+                })
 
     total = (
         len(have)
