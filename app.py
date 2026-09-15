@@ -2390,7 +2390,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
     meat_parents = {
         "beef": {
-            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "beef shank",
+            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "brisket", "whole packer brisket", "packer brisket", "untrimmed brisket", "beef shank",
             "beef steak", "beef roast", "roast beef", "beef stew meat",
             "beef short ribs", "beef tenderloin", "beef sirloin",
             "steak", "ribeye", "ribeyes", "rib eye", "rib eyes",
@@ -3029,6 +3029,34 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
             if user_parent != recipe_parent:
                 continue
+
+            # -------------------------------------------------
+            # SPECIFIC CUT / DESCRIPTIVE MEAT EQUIVALENCE
+            # -------------------------------------------------
+            # Different recognized names for the same specific cut
+            # are equivalent when they resolve to the same animal.
+            #
+            # Examples:
+            #   beef brisket <-> brisket
+            #   beef brisket <-> whole packer brisket
+            #   beef brisket <-> untrimmed brisket
+            #
+            # This does NOT make different beef cuts interchangeable.
+            # Ground/non-ground protection remains authoritative below.
+            # -------------------------------------------------
+            brisket_variants = {
+                "beef brisket",
+                "brisket",
+                "whole packer brisket",
+                "packer brisket",
+                "untrimmed brisket",
+            }
+
+            if (
+                original_recipe_name in brisket_variants
+                and original_user_name in brisket_variants
+            ):
+                return True
 
             recipe_is_ground = is_ground_meat(original_recipe_name)
             user_is_ground = is_ground_meat(original_user_name)
