@@ -648,6 +648,7 @@ def clean_word(text):
     if not text:
         return ""
 
+
     text = text.lower().strip()
     
     text = re.sub(r"\([^)]*\)", "", text)
@@ -3748,7 +3749,7 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
             if normalized not in requirements:
                 requirements[normalized] = {
-                    "original": part,
+                    "original": normalized,
                     "alternatives": alternatives
                 }
             else:
@@ -4171,7 +4172,229 @@ def search_web_recipes(user_ingredients, count=10):
         print("Brave web search error:", e)
         return []
 
+def clean_recipe_ingredient_metadata(text):
+    """
+    Remove recipe-site labels, section headings, editorial wording, and
+    scraped measurement fragments before ingredient normalization.
+
+    This function must not alter legitimate ingredient identities or the
+    established OR-alternative matching behavior.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    text = text.strip()
+
+    if not text:
+        return ""
+
+    # Repair common UTF-8-as-Latin-1/Windows-1252 mojibake before
+    # measurement and ingredient normalization. Web recipe pages can
+    # otherwise turn values such as:
+    #   ¾ -> Â¾
+    #   – -> â
+    # into fragments such as "in ginger" or "fl chicken stock".
+    #
+    # Only keep the repaired value when it actually improves the text.
+    for encoding in ("latin1", "cp1252"):
+        try:
+            repaired = text.encode(encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+
+        if repaired != text:
+            text = repaired
+            break
+
+    # Recipe-schema/site labels.
+    text = re.sub(
+        r"^\s*(?:recipe\s+)?ingredients?\s*[:\-]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Section prefixes such as:
+    #   "For the chicken: chicken breasts"
+    #   "For the sauce: soy sauce"
+    #   "With the vegetables: carrots"
+    text = re.sub(
+        r"^\s*(?:for|with)\s+(?:the\s+)?[a-z][a-z\s\-]*\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Common editorial prefixes.
+    text = re.sub(
+        r"^\s*(?:optional|for\s+serving|to\s+serve|plus\s+more)\s*[:\-]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove an editorial note section wherever it starts.
+    text = re.sub(
+        r"\s+notes?\s*[:\-].*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Editorial wording after an ingredient.
+    text = re.sub(
+        r"\s*,?\s+\bpreferably\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s*,?\s+\b(?:ideally|if\s+desired|as\s+needed)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s*,?\s+\b(?:plus\s+more)\s+for\s+serving\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s*,?\s+\b(?:for\s+serving|to\s+serve)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Standalone editorial fragments created after comma splitting.
+    if re.match(
+        r"^\s*(?:preferably|ideally|if\s+desired|as\s+needed)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return ""
+
+    if re.match(
+        r"^\s*(?:plus\s+more\s+for\s+serving|more\s+for\s+serving|"
+        r"for\s+serving|to\s+serve)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return ""
+
+    # Scraped recipe sources often encode two measurements for the same
+    # ingredient using a slash, including Unicode fractions:
+    #
+    #   "50g/1¾oz ginger"
+    #   "20–50ml/¾–2fl oz chicken stock"
+    #   "1cm/½in piece ginger"
+    #
+    # These are measurements, NOT ingredient alternatives. Remove the
+    # complete measurement pair before normalize_recipe_ingredient() gets
+    # a chance to interpret "/" as an alternative separator.
+    number_token = (
+        r"(?:"
+        r"\d+(?:\.\d+)?"
+        r"|[¼½¾⅓⅔⅛⅜⅝⅞]"
+        r"|(?:\d+\s*)?[¼½¾⅓⅔⅛⅜⅝⅞]"
+        r")"
+    )
+
+    measurement_unit = (
+        r"(?:"
+        r"fl\s*oz(?:ounce)?s?"
+        r"|oz(?:ounce)?s?"
+        r"|kg|kilograms?"
+        r"|lb|lbs|pound|pounds"
+        r"|g|grams?"
+        r"|ml|milliliters?"
+        r"|l|liters?"
+        r"|cm|mm"
+        r"|in(?:ch|ches)?"
+        r"|tbsp|tbs|tablespoons?"
+        r"|tsp|teaspoons?"
+        r")"
+    )
+
+    measurement = (
+        rf"{number_token}"
+        rf"\s*(?:{measurement_unit})\b"
+    )
+
+    measurement_range = (
+        rf"{number_token}"
+        rf"\s*(?:[-–—]\s*{number_token})?"
+        rf"\s*(?:{measurement_unit})\b"
+    )
+
+    text = re.sub(
+        rf"{measurement_range}\s*/\s*{measurement_range}",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove leading measurements repeatedly. A scraped OR expression can
+    # contain more than one measurement, for example:
+    #   "2 cm or 1 in ginger"
+    # After removing the first measurement, the second one must also be
+    # removed rather than becoming part of the ingredient identity.
+    previous = None
+    while text != previous:
+        previous = text
+
+        text = re.sub(
+            rf"^\s*{measurement_range}\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(
+            r"^\s*or\s+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(r"\s+", " ", text).strip()
+
+    # Remove a dangling OR left by scraped measurement cleanup.
+    text = re.sub(
+        r"^\s*or\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # If a malformed measurement scrape leaves a generic ingredient followed
+    # by a more-specific version of that same ingredient, retain the specific
+    # identity rather than inventing a fake OR requirement.
+    malformed_specific = re.fullmatch(
+        r"(stock|broth)\s+or\s+(.+\s+(?:stock|broth))",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if malformed_specific:
+        left = malformed_specific.group(1).strip().lower()
+        right = malformed_specific.group(2).strip()
+
+        if right.lower().endswith(" " + left):
+            text = right
+
+    return text.strip()
+
 def normalize_recipe_ingredient(text, preserve_source=False):
+    if not text:
+        return '', []
+
+    text = clean_recipe_ingredient_metadata(text)
+
     if not text:
         return '', []
 
@@ -4201,6 +4424,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
         r'(?:of\s+)?'
         r'(?:'
         r'(?:kosher|sea|table|fine\s+sea|coarse\s+sea|fine|coarse)?\s*salt'
+        r'(?:\s+(?:flakes?|crystals?))?'
         r'|'
         r'(?:(?:freshly\s+ground|ground|cracked)\s+)?'
         r'(?:black|white)?\s*pepper'
@@ -4260,6 +4484,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
     if re.fullmatch(
         r'\s*(?:'
         r'(?:kosher|sea|table|fine\s+sea|coarse\s+sea|fine|coarse)?\s*salt'
+        r'(?:\s+(?:flakes?|crystals?))?'
         r'|'
         r'(?:(?:freshly[\s-]+ground|ground|cracked)\s+)?(?:black|white)?\s*pepper'
         r')\s+(?:little|pinch|dash|to\s+taste|as\s+needed)?\s*',
@@ -4288,6 +4513,40 @@ def normalize_recipe_ingredient(text, preserve_source=False):
         text = text.replace('sweet paprika', 'sweet paprika,').replace('each ', '')
         text = text.replace('salt and pepper', 'salt, pepper')
 
+    # Remove scraped editorial/preparation wording before OR parsing.
+    #
+    # These phrases describe how an ingredient may be prepared or shown,
+    # rather than identifying additional ingredients. Keeping them until
+    # the OR parser runs can incorrectly turn wording such as
+    # "skin on or off" into ingredient alternatives.
+    text = re.sub(
+        r'\s*,?\s*\bskin[- ]on\s+or\s+off\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r'\s*,?\s*\bskin[- ]on\s+pictured\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r'\s*,?\s*\bpictured\b.*$',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r'\s*,?\s*\(?(?:see\s+)?notes?\s*\d*\)?\s*$',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
     # Decode common HTML entities.
     text = re.sub(r'&quot;|&amp;', ' ', text)
 
@@ -4295,18 +4554,6 @@ def normalize_recipe_ingredient(text, preserve_source=False):
     # 'sesame oil (or olive oil)'
     # 'chicken broth (or water)'
     alternatives = re.findall(r'\bor\s+([^()]+)', text)
-
-    # When an alternative follows a comma, keep it in  and
-    # remove it from the primary ingredient text before known-ingredient
-    # extraction. This prevents duplicate identities such as:
-    # "Lucini olive oil, or any high quality olive oil"
-    # becoming "lucini olive oil olive oil".
-    text = re.sub(
-        r'\s*,\s*or\s+.*$',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
 
     # Preserve comma-separated OR lists with a shared ingredient tail.
     # Example:
@@ -4330,6 +4577,30 @@ def normalize_recipe_ingredient(text, preserve_source=False):
             shared_tail = ' '.join(tail_words[-2:])
             final_head = ' '.join(tail_words[:-2]).strip()
 
+            # Handle lists such as:
+            #   red, green, or orange red peppers
+            # by recognizing an earlier choice inside the final choice.
+            for prior_choice in (choice1, choice2):
+                prior_words = prior_choice.split()
+
+                if len(prior_words) != 1:
+                    continue
+
+                prior_lower = prior_words[0].lower()
+
+                for prior_index, word in enumerate(tail_words[:-1]):
+                    if word.lower() == prior_lower:
+                        candidate_tail = ' '.join(
+                            tail_words[prior_index + 1:]
+                        ).strip()
+
+                        if candidate_tail:
+                            shared_tail = candidate_tail
+                            final_head = ' '.join(
+                                tail_words[:prior_index + 1]
+                            ).strip()
+                        break
+
             if final_head:
                 options = [
                     choice1 + ' ' + shared_tail,
@@ -4345,6 +4616,15 @@ def normalize_recipe_ingredient(text, preserve_source=False):
 
             text = options[0]
             alternatives = options[1:]
+
+    # Handle a generic comma-before-OR alternative after structured
+    # comma-separated OR lists have already been captured.
+    text = re.sub(
+        r'\s*,\s*or\s+.*$',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
 
     # For an ingredient written as "ingredient or alternative", preserve
     # the shared ingredient context. For example:
@@ -4368,10 +4648,27 @@ def normalize_recipe_ingredient(text, preserve_source=False):
             }
         ):
             shared_prefix = primary_words[:-1]
+
             if shared_prefix:
-                alternatives = [
-                    ' '.join(shared_prefix + alternative_words)
-                ]
+                inferred_alternative = ' '.join(
+                    shared_prefix + alternative_words
+                )
+
+                # Only inherit the shared ingredient prefix when the
+                # resulting phrase is itself a recognized ingredient.
+                #
+                # Valid:
+                #   chicken legs or breasts
+                #   -> chicken legs / chicken breasts
+                #
+                # Invalid inference:
+                #   broccoli florets or asparagus
+                #   -> broccoli florets / asparagus
+                #
+                # This protects the universal OR-alternative behavior
+                # without inventing combined ingredient identities.
+                if extract_known_ingredient(inferred_alternative):
+                    alternatives = [inferred_alternative]
 
         text = primary_text
 
@@ -4407,8 +4704,8 @@ def normalize_recipe_ingredient(text, preserve_source=False):
     # Remove common units and size words, whether attached to the
     # quantity or separated by whitespace.
     text = re.sub(
-        r'\b(?:g|gram|grams|kg|kilogram|kilograms|lbs?|pounds?|oz|ounces?|'
-        r'ml|milliliter|milliliters|l|liter|liters|cups?|cup|tbsp|tbs|'
+        r'\b(?:gram|grams|kg|kilogram|kilograms|lbs?|pounds?|oz|ounces?|'
+        r'ml|milliliter|milliliters|liter|liters|cups?|cup|tbsp|tbs|'
         r'tablespoons?|tsp|teaspoons?|cloves?|heads?|ea|mass|spoon|spoons|'
         r'bowl|bowls|large|medium|small|thin|inches?|inch)\b',
         ' ',
@@ -4450,8 +4747,8 @@ def normalize_recipe_ingredient(text, preserve_source=False):
             )
 
             alternative = re.sub(
-                r'\b(?:g|gram|grams|kg|kilogram|kilograms|lbs?|pounds?|'
-                r'oz|ounces?|ml|milliliter|milliliters|l|liter|liters|'
+                r'\b(?:gram|grams|kg|kilogram|kilograms|lbs?|pounds?|'
+                r'oz|ounces?|ml|milliliter|milliliters|liter|liters|'
                 r'cups?|cup|tbsp|tbs|tablespoons?|tsp|teaspoons?|cloves?|'
                 r'heads?|ea|mass|spoon|spoons|bowl|bowls)\b',
                 ' ',
@@ -7282,42 +7579,49 @@ document.addEventListener("DOMContentLoaded", function () {
 </script>
 
 <script>
-async function toggleKitchenMusic() {
+async function startKitchenMusic(force = false) {
     const audio = document.getElementById("kitchen-music");
     const button = document.getElementById("sound-toggle");
 
     if (!audio || !button) {
+        return false;
+    }
+
+    if (
+        !force &&
+        localStorage.getItem("inThePantryKitchenSound") === "off"
+    ) {
+        updateKitchenMusicButton();
+        return false;
+    }
+
+    audio.volume = 0.15;
+
+    try {
+        await audio.play();
+    } catch (error) {
+        return false;
+    }
+
+    localStorage.setItem("inThePantryKitchenSound", "on");
+    updateKitchenMusicButton();
+    return true;
+}
+
+async function toggleKitchenMusic() {
+    const audio = document.getElementById("kitchen-music");
+
+    if (!audio) {
         return;
     }
 
     if (audio.paused) {
-        audio.volume = 0.15;
-
-        try {
-            await audio.play();
-        } catch (error) {
-            return;
-        }
-
-        button.setAttribute("aria-pressed", "true");
-        button.classList.add("active");
-        button.textContent = "🔊 Kitchen Music";
-
-        localStorage.setItem(
-            "inThePantryKitchenSound",
-            "on"
-        );
+        localStorage.setItem("inThePantryKitchenSound", "on");
+        await startKitchenMusic(true);
     } else {
         audio.pause();
-
-        button.setAttribute("aria-pressed", "false");
-        button.classList.remove("active");
-        button.textContent = "🔇 Kitchen Music";
-
-        localStorage.setItem(
-            "inThePantryKitchenSound",
-            "off"
-        );
+        localStorage.setItem("inThePantryKitchenSound", "off");
+        updateKitchenMusicButton();
     }
 }
 
@@ -7340,7 +7644,79 @@ function updateKitchenMusicButton() {
     }
 }
 
+function initializeKitchenMusic() {
+    const audio = document.getElementById("kitchen-music");
+    const button = document.getElementById("sound-toggle");
+
+    if (!audio || !button) {
+        return;
+    }
+
+    if (window._inThePantryMusicInitialized === true) {
+        updateKitchenMusicButton();
+        return;
+    }
+
+    window._inThePantryMusicInitialized = true;
+
+    updateKitchenMusicButton();
+
+    if (localStorage.getItem("inThePantryKitchenSound") === "off") {
+        return;
+    }
+
+    startKitchenMusic();
+
+    const startOnInteraction = async function () {
+        if (
+            localStorage.getItem("inThePantryKitchenSound") === "off"
+        ) {
+            return;
+        }
+
+        if (!audio.paused) {
+            return;
+        }
+
+        const started = await startKitchenMusic();
+
+        if (started) {
+            document.removeEventListener(
+                "pointerdown",
+                startOnInteraction
+            );
+            document.removeEventListener(
+                "keydown",
+                startOnInteraction
+            );
+            document.removeEventListener(
+                "touchstart",
+                startOnInteraction
+            );
+        }
+    };
+
+    document.addEventListener(
+        "pointerdown",
+        startOnInteraction,
+        { once: false }
+    );
+
+    document.addEventListener(
+        "keydown",
+        startOnInteraction,
+        { once: false }
+    );
+
+    document.addEventListener(
+        "touchstart",
+        startOnInteraction,
+        { once: false }
+    );
+}
+
 function initializeRecipeSearch() {
+    initializeKitchenMusic();
     const form = document.querySelector("form");
 
     if (!form || form.dataset.musicSearchBound === "true") {
@@ -7453,6 +7829,7 @@ function initializeRecipeSearch() {
 document.addEventListener("DOMContentLoaded", function () {
     updateKitchenMusicButton();
     initializeRecipeSearch();
+    initializeKitchenMusic();
 });
 </script>
 
@@ -7494,7 +7871,7 @@ document.addEventListener("DOMContentLoaded", function () {
         </div>
     </div>
 
-    <audio id="kitchen-music" preload="metadata" loop>
+    <audio id="kitchen-music" preload="metadata" loop autoplay>
         <source
             src="{{ url_for('static', filename='audio/Spirit-of-the-Woods.mp3') }}"
             type="audio/mpeg"
