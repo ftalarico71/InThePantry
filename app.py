@@ -4519,7 +4519,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
     # A standalone preparation instruction is not an ingredient.
     # It can appear as a separate comma-delimited fragment after the
     # real ingredient has already been separated.
-    if re.match(
+    if re.fullmatch(
         r'^(?:cut|chop|dice|slice|cube|halve|peel|trim|remove|'
         r'grate|shred|mince|crush|mash|blend|whisk|beat|stir|'
         r'toss|drain|rinse|soak|cook|bake|boil|simmer|roast|'
@@ -5258,7 +5258,7 @@ def extract_ingredient_identity(text):
         r"\bcook(?:ed|ing)?\b",
         r"\bboil(?:ed|ing)?\b",
         r"\bsimmer(?:ed|ing)?\b",
-        r"\broast(?:ed|ing)?\b",
+        r"\broasted\b",
         r"\bbake(?:d|ing)?\b",
         r"\bsaute(?:d|ing)?\b",
         r"\bfry(?:ed|ing)?\b",
