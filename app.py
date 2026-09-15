@@ -588,7 +588,6 @@ MEAT_GROUPS = {
 
     "Beef": [
         "ground beef",
-        "beef chuck",
         "beef brisket",
         "beef steak",
         "chuck roast",
