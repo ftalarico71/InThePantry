@@ -499,7 +499,6 @@ COMMON_INGREDIENTS = {
         "ground chicken",
         "whole chicken",
         "ground beef",
-        "beef chuck",
         "beef brisket",
         "beef steak",
         "chuck roast",
