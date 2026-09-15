@@ -934,6 +934,62 @@ def canonical_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
+    # ---------------------------------------------------------
+    # UNIVERSAL RECIPE METADATA CLEANUP
+    # ---------------------------------------------------------
+    # Remove descriptive wording that can remain after quantities
+    # and units have already been stripped.
+    #
+    # Examples:
+    #   "inch thick sirloin steak" -> "sirloin steak"
+    #   "thick sirloin steak" -> "sirloin steak"
+    #   "green parts only scallions" -> "scallions"
+    #   "soy sauce if you prefer" -> "soy sauce"
+    #
+    # These words describe size, preparation, presentation, or
+    # editorial preference. They are not ingredient identity.
+
+    text = re.sub(
+        r"\\b(?:inch|in)\\s+(?:thick|thin)\\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\\b(?:thick|thin|roughly|finely|coarsely|"
+        r"green|white|light|dark)\\s+"
+        r"(?:parts?|pieces?|sections?)\\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\\b(?:thick|thin|tender|roughly|finely|coarsely)\\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Editorial preference wording is not ingredient identity.
+    text = re.sub(
+        r"\\bif\\s+you\\s+prefer\\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\\b(?:as\\s+desired|as\\s+you\\s+prefer|"
+        r"if\\s+desired|optional|to\\s+your\\s+taste)\\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(r"\\s+", " ", text).strip()
+
     # Preparation/instruction wording starts the non-identity tail.
     text = re.sub(
         r"\s+\b(?:roughly|rough|lightly|heavily|"
@@ -3812,6 +3868,203 @@ def user_facing_ingredient_identity(text):
     return value
 
 
+
+def split_combined_recipe_ingredient_entry(text):
+    """
+    Universal boundary repair for recipe sources that incorrectly place
+    multiple ingredient identities into one schema string.
+
+    Example:
+        "steak sweet potatoes mushrooms peppercorns sweetcorn mustard red wine"
+
+    becomes separate ingredient entries when multiple known ingredient
+    identities can be identified.
+
+    A normal ingredient line is left untouched so the existing metadata
+    normalizer remains authoritative.
+
+    OR expressions remain intact because "or" is a meaningful alternative
+    boundary handled by normalize_recipe_ingredient().
+    """
+    if not isinstance(text, str):
+        return []
+
+    value = text.strip()
+    if not value:
+        return []
+
+    # Never break a genuine OR expression here. The existing normalizer
+    # already knows how to preserve and normalize recipe alternatives.
+    if re.search(r"\bor\b", value, flags=re.IGNORECASE):
+        return [value]
+
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return []
+
+    # Build the same broad vocabulary already used by the identity engine.
+    known = set()
+
+    for variants in CORE_INGREDIENTS.values():
+        known.update(
+            str(item).strip().lower()
+            for item in variants
+            if isinstance(item, str) and item.strip()
+        )
+
+    for category_values in COMMON_INGREDIENTS.values():
+        known.update(
+            str(item).strip().lower()
+            for item in category_values
+            if isinstance(item, str) and item.strip()
+        )
+
+    # Include established canonical identities and common plural forms.
+    known.update({
+        "sirloin steak",
+        "steak",
+        "sweet potatoes",
+        "sweet potato",
+        "mushrooms",
+        "mushroom",
+        "peppercorns",
+        "peppercorn",
+        "sweetcorn",
+        "mustard",
+        "red wine",
+        "green onion",
+        "green onions",
+        "scallion",
+        "scallions",
+        "canola oil",
+        "olive oil",
+        "vegetable oil",
+        "cornstarch",
+        "brown sugar",
+        "ginger",
+        "garlic",
+    })
+
+    known = sorted(
+        known,
+        key=lambda item: (
+            len(item.split()),
+            len(item),
+        ),
+        reverse=True,
+    )
+
+    lower = cleaned.lower()
+    matches = []
+    occupied = []
+
+    for ingredient in known:
+        pattern = (
+            r"(?<![a-z])"
+            + re.escape(ingredient)
+            + r"(?![a-z])"
+        )
+
+        for match in re.finditer(pattern, lower):
+            start = match.start()
+            end = match.end()
+
+            if any(
+                start < existing_end and end > existing_start
+                for existing_start, existing_end in occupied
+            ):
+                continue
+
+            matches.append(
+                (
+                    start,
+                    end,
+                    cleaned[start:end],
+                )
+            )
+            occupied.append((start, end))
+
+    if len(matches) < 2:
+        return [value]
+
+    # Keep the longest identity at each location.
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+
+    selected = []
+    last_end = -1
+
+    for start, end, ingredient in matches:
+        if start < last_end:
+            continue
+        selected.append((start, end, ingredient))
+        last_end = end
+
+    if len(selected) < 2:
+        return [value]
+
+    # Only treat this as a malformed combined ingredient string when the
+    # identified ingredients account for the meaningful words in the entry.
+    # Recipe-site metadata can remain around a single legitimate identity.
+    covered = [False] * len(lower)
+
+    for start, end, _ in selected:
+        for index in range(start, end):
+            covered[index] = True
+
+    remainder = lower
+    for start, end, _ in reversed(selected):
+        remainder = remainder[:start] + " " + remainder[end:]
+
+    remainder_words = re.findall(r"[a-z]+", remainder)
+
+    metadata_words = {
+        "and",
+        "with",
+        "plus",
+        "for",
+        "the",
+        "of",
+        "to",
+        "taste",
+        "fresh",
+        "freshly",
+        "ground",
+        "cracked",
+        "minced",
+        "chopped",
+        "sliced",
+        "diced",
+        "large",
+        "small",
+        "medium",
+        "thick",
+        "thin",
+        "boneless",
+        "bone",
+        "in",
+        "pieces",
+        "piece",
+        "stalk",
+        "stalks",
+        "whole",
+        "reduced",
+        "sodium",
+        "extra",
+        "virgin",
+        "preferred",
+        "preferably",
+    }
+
+    if any(word not in metadata_words for word in remainder_words):
+        return [value]
+
+    return [
+        ingredient.strip()
+        for _, _, ingredient in selected
+        if ingredient.strip()
+    ]
+
+
 def match_recipe_to_pantry(recipe, pantry_items):
     if not recipe:
         return None
@@ -3878,10 +4131,17 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
     requirements = {}
 
+    recipe_entries = []
+
     for original in recipe.get(
         "ingredients",
         []
     ):
+        recipe_entries.extend(
+            split_combined_recipe_ingredient_entry(original)
+        )
+
+    for original in recipe_entries:
         # Some recipe websites combine multiple ingredients
         # into one schema line, for example:
         # "diced scallions + toasted sesame seeds"
