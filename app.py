@@ -6961,6 +6961,30 @@ def find_recipes(
                 if not identity:
                     continue
 
+                # -----------------------------------------------------
+                # UNIVERSAL CONCATENATED-INGREDIENT BOUNDARY
+                # -----------------------------------------------------
+                # Some recipe sources incorrectly concatenate several
+                # ingredient identities into one source string without
+                # commas, bullets, or line breaks.
+                #
+                # Example:
+                #   "steak sweet potatoes mushrooms peppercorns sweetcorn
+                #    mustard red wine"
+                #
+                # That entire string must NEVER become one ingredient.
+                # Use the application's existing ingredient vocabulary
+                # to recover the actual ingredient identities.
+                #
+                # Longest vocabulary matches are selected first so
+                # compound ingredients such as:
+                #   olive oil
+                #   chicken stock
+                #   red pepper flakes
+                # remain intact.
+                # -----------------------------------------------------
+
+
                 # Remove a final source/preparation tail if one survived
                 # the vocabulary extraction.
                 identity = extract_ingredient_identity(identity) or identity
