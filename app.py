@@ -666,7 +666,7 @@ def clean_word(text):
         r"cup|cups|ounce|ounces|oz|"
         r"gram|grams|g|kg|ml|liter|litre|"
         r"pinch|handful|clove|cloves|head|heads|"
-        r"bunch|piece|pieces)\b",
+        r"bunch|piece|pieces|dozen)\b",
         "",
         text
     )
@@ -840,6 +840,16 @@ def canonical_ingredient_identity(text):
     ):
         return ""
 
+    # "No salt added" is a product descriptor, not a standalone
+    # salt ingredient. Remove the complete phrase before the
+    # general salt-staple cleanup runs.
+    text = re.sub(
+        r"\bno\s+salt\s+added\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     # Remove salt in every seasoning/product form.
     salt_seasoning = re.compile(
         r"\b(?:(?:un)?salt(?:ed)?|"
@@ -886,7 +896,7 @@ def canonical_ingredient_identity(text):
     text = re.sub(
         r"\b(?:grass\s+fed|grassfed|grain\s+fed|pasture\s+raised|"
         r"free\s+range|organic|all\s+natural|natural|lean|"
-        r"extra\s+lean|premium|boneless|skinless)\b",
+        r"extra\s+lean|premium|boneless|skinless|frozen|dry|ripe)\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -912,7 +922,7 @@ def canonical_ingredient_identity(text):
     text = re.sub(
         r"\b(?:canned|jarred|packaged|prepackaged|"
         r"undrained|granulated|reduced\s+fat|low\s+fat|"
-        r"fat\s+free|nonfat|(?:low|reduced)\s+sodium|"
+        r"full\s+fat|fat\s+free|nonfat|(?:low|reduced)\s+sodium|"
         r"no\s+salt\s+added|unsweetened|"
         r"sugar\s+free)\b",
         " ",
@@ -5292,7 +5302,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
 
 
     text = re.sub(
-        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
+        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
         ' ',
         text,
         flags=re.IGNORECASE
