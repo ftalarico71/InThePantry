@@ -4026,13 +4026,12 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 if not text:
                     continue
 
-                # Now split genuine ingredients joined by "and".
-                subparts = re.split(r'\s+and\s+', text, flags=re.IGNORECASE)
-                compound_parts.extend(
-                    subpart.strip()
-                    for subpart in subparts
-                    if subpart.strip()
-                )
+                # Keep the complete source ingredient entry intact.
+                # The universal ingredient normalizer is responsible for
+                # identifying the ingredient and handling legitimate OR
+                # alternatives. Never invent ingredient boundaries by
+                # splitting on the word "and".
+                compound_parts.append(text)
 
         parts = compound_parts
 
@@ -4045,10 +4044,17 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
         elif re.search(r'\beach\s*:\s*', original, re.IGNORECASE):
 
-            each_text = re.sub(r'^.*?\beach\s*:\s*', '', original, flags=re.IGNORECASE)
+            # Remove the recipe-site "each:" label, but keep the resulting
+            # ingredient entry intact. Do not invent boundaries by splitting
+            # on "and".
+            each_text = re.sub(
+                r'^.*?\beach\s*:\s*',
+                '',
+                original,
+                flags=re.IGNORECASE
+            ).strip()
 
-            parts = re.split(r'\s*,\s*|\s+and\s+', each_text, flags=re.IGNORECASE)
-            parts = [re.sub(r'^and\s+', '', part, flags=re.IGNORECASE).strip() for part in parts]
+            parts = [each_text] if each_text else []
 
         for part in parts:
             normalized, alternatives = (
