@@ -928,7 +928,7 @@ def canonical_ingredient_identity(text):
     text = re.sub(
         r"\b(?:canned|jarred|packaged|prepackaged|"
         r"undrained|granulated|reduced\s+fat|low\s+fat|"
-        r"fat\s+free|nonfat|low\s+sodium|"
+        r"fat\s+free|nonfat|low\s+sodium|reduced\s+sodium|"
         r"no\s+salt\s+added|unsweetened|"
         r"sugar\s+free)\b",
         " ",
@@ -4662,6 +4662,26 @@ def clean_recipe_ingredient_metadata(text):
         flags=re.IGNORECASE,
     )
 
+    # Universal preference/editorial wording cleanup.
+    # Preference language is never part of an ingredient identity.
+    #
+    # Examples:
+    #   "soy sauce if you prefer" -> "soy sauce"
+    #   "olive oil, if you prefer" -> "olive oil"
+    text = re.sub(
+        r"\s*,?\s+\bif\s+(?:you\s+)?prefer\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s*,?\s+\b(?:if\s+you\s+)?prefer\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     # Standalone editorial fragments created after comma splitting.
     if re.match(
         r"^\s*(?:preferably|ideally|if\s+desired|as\s+needed)\b",
@@ -4942,72 +4962,48 @@ def normalize_recipe_ingredient(text, preserve_source=False):
     # Decode common HTML entities.
     text = re.sub(r'&quot;|&amp;', ' ', text)
 
-    # Find alternatives such as:
-    # 'sesame oil (or olive oil)'
-    # 'chicken broth (or water)'
-    alternatives = re.findall(r'\bor\s+([^()]+)', text)
+    # Identify OR alternatives without allowing the alternative text
+    # to become part of the primary ingredient.
+    #
+    # The source ingredient and each alternative are separate ingredient
+    # candidates. Editorial wording such as "if you prefer" has already
+    # been removed by clean_recipe_ingredient_metadata().
+    #
+    # Examples:
+    #   "tamari sauce, or soy sauce"
+    #       -> primary "tamari sauce", alternative "soy sauce"
+    #
+    #   "olive oil, or avocado oil"
+    #       -> primary "olive oil", alternative "avocado oil"
+    #
+    # Never concatenate the alternatives into the primary identity.
+    alternatives = []
 
-    # Preserve comma-separated OR lists with a shared ingredient tail.
-    # Example:
-    #   "red, green, or orange red peppers"
-    # becomes primary "red peppers" with alternatives
-    # "green peppers" and "orange red peppers".
-    comma_or_match = re.fullmatch(
-        r'\s*(.*?)\s*,\s*(.*?)\s*,?\s+or\s+(.+?)\s*',
+    parenthetical_or = re.findall(
+        r'\bor\s+([^()]+)',
         text,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
+    )
+
+    for alternative in parenthetical_or:
+        alternative = alternative.strip()
+        if alternative:
+            alternatives.append(alternative)
+
+    # Capture the primary side before a comma-delimited OR.
+    comma_or_match = re.search(
+        r'^(.*?)\s*,\s*or\s+(.+?)\s*$',
+        text,
+        flags=re.IGNORECASE,
     )
 
     if comma_or_match:
-        choice1 = comma_or_match.group(1).strip()
-        choice2 = comma_or_match.group(2).strip()
-        choice3 = comma_or_match.group(3).strip()
+        primary_candidate = comma_or_match.group(1).strip()
+        alternative_candidate = comma_or_match.group(2).strip()
 
-        tail_words = choice3.split()
-
-        if len(tail_words) >= 2:
-            shared_tail = ' '.join(tail_words[-2:])
-            final_head = ' '.join(tail_words[:-2]).strip()
-
-            # Handle lists such as:
-            #   red, green, or orange red peppers
-            # by recognizing an earlier choice inside the final choice.
-            for prior_choice in (choice1, choice2):
-                prior_words = prior_choice.split()
-
-                if len(prior_words) != 1:
-                    continue
-
-                prior_lower = prior_words[0].lower()
-
-                for prior_index, word in enumerate(tail_words[:-1]):
-                    if word.lower() == prior_lower:
-                        candidate_tail = ' '.join(
-                            tail_words[prior_index + 1:]
-                        ).strip()
-
-                        if candidate_tail:
-                            shared_tail = candidate_tail
-                            final_head = ' '.join(
-                                tail_words[:prior_index + 1]
-                            ).strip()
-                        break
-
-            if final_head:
-                options = [
-                    choice1 + ' ' + shared_tail,
-                    choice2 + ' ' + shared_tail,
-                    final_head + ' ' + shared_tail,
-                ]
-            else:
-                options = [
-                    choice1 + ' ' + shared_tail,
-                    choice2 + ' ' + shared_tail,
-                    shared_tail,
-                ]
-
-            text = options[0]
-            alternatives = options[1:]
+        if primary_candidate and alternative_candidate:
+            text = primary_candidate
+            alternatives = [alternative_candidate]
 
     # Handle a generic comma-before-OR alternative after structured
     # comma-separated OR lists have already been captured.
@@ -5534,338 +5530,80 @@ def normalize_recipe_metadata(value):
 
 def extract_ingredient_identity(text):
     """
-    Universal recipe-source ingredient identity extraction.
+    Extract the actual ingredient identity from a recipe ingredient record.
 
-    The result is the ingredient itself, with quantities, portions,
-    preparation instructions, cooking instructions, editorial notes,
-    and source-metadata fragments removed.
+    The source record is authoritative, but editorial/preparation language,
+    quantities, serving directions, preference clauses, and other non-identity
+    text must never become part of the ingredient identity.
 
-    Meaningful ingredient descriptors are preserved:
-        ground beef
-        lean ground beef
-        grass fed ground beef
-        yellow onion
-        green bell pepper
-        russet potatoes
-        baby portobello mushrooms
-        salmon filets
-
-    Preparation is never allowed to become part of the identity:
-        garlic lightly smashed -> garlic
-        ground beef browned and drained -> ground beef
-        corn cut off the cob -> corn
-        russet potatoes peeled and cubed -> russet potatoes
+    This function deliberately works as an identity extractor rather than
+    treating every surviving source word as an ingredient.
     """
-    if not isinstance(text, str):
+    if text is None:
         return ""
 
-    cleaned = text.lower().strip()
+    source = str(text).strip()
+
+    if not source:
+        return ""
+
+    # First use the existing canonical cleanup pipeline.
+    cleaned = canonical_ingredient_identity(source)
+
     if not cleaned:
         return ""
 
-    # Decode common HTML entities.
-    cleaned = re.sub(r"&(?:quot|amp|apos|lt|gt);", " ", cleaned)
+    # Remove parenthetical editorial/preparation information.
+    cleaned = re.sub(r"\([^)]*\)", " ", cleaned)
 
-    # Keep letters and whitespace only. Quantities, fractions, punctuation,
-    # measurements, and source punctuation are not ingredient identity.
-    cleaned = re.sub(r"[^a-z\s]", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    # Remove leading scraped measurement and serving metadata that remains
-    # after punctuation/numeric cleanup.
-    #
-    # Examples:
-    #   "20–50ml/¾–2fl oz chicken stock" -> "chicken stock"
-    #   "1cm/½in piece ginger" -> "ginger"
-    #   "pinch of salt" -> "salt"
+    # Remove common trailing editorial/preference clauses.
     cleaned = re.sub(
-        r"^\s*(?:"
-        r"fl\s+oz|"
-        r"oz|"
-        r"kg|"
-        r"grams?|g|"
-        r"ml|"
-        r"liters?|litres?|l|"
-        r"cm|mm|"
-        r"inches?|inch|in"
-        r")\s+",
+        r"\s+(?:if|as|when|unless)\s+(?:you\s+)?(?:prefer|like|want|wish|needed|available)\b.*$",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
 
     cleaned = re.sub(
-        r"^\s*(?:"
-        r"pinch|dash|handful|"
-        r"cloves?|heads?|bunches?|"
-        r"pieces?|stalks?|sprigs?|"
-        r"cans?|packages?|sticks?"
-        r")\s+(?:of\s+)?",
+        r"\s+for\s+(?:gluten[- ]free|dairy[- ]free|vegan|vegetarian|serving|garnish|decoration)\b.*$",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
 
+    # Remove explicit alternative/preparation prose while preserving the
+    # ingredient before the clause. Alternative ingredients are handled
+    # separately by normalize_recipe_ingredient().
     cleaned = re.sub(
-        r"^\s*of\s+",
+        r"\s+(?:if|when|unless)\s+.*$",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
 
+    # Remove trailing preparation/instruction language.
+    cleaned = re.sub(
+        r"\s+(?:to\s+taste|as\s+needed|as\s+desired|for\s+serving|for\s+garnish|for\s+garnishing)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove dangling punctuation left by editorial removal.
+    cleaned = re.sub(r"[,:;]+\s*$", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     if not cleaned:
         return ""
 
-    # FINAL UNIVERSAL METADATA CLEANUP
-    #
-    # Source sites can leave measurement fragments behind after numeric
-    # characters and punctuation have been stripped. Remove the complete
-    # leading metadata chain before identity extraction.
-    #
-    # Examples:
-    #   "For the chicken: chicken breasts" -> "chicken breasts"
-    #   "fl chicken stock" -> "chicken stock"
-    #   "in piece ginger" -> "ginger"
-    #   "cm in piece ginger" -> "ginger"
-    #   "pinch of salt" -> "salt"
-    cleaned = re.sub(
-        r"^\s*(?:"
-        r"(?:for|with)\s+(?:the\s+)?[a-z\s-]+?\s+"
-        r"|"
-        r"(?:fl\s+oz|oz|kg|grams?|g|ml|liters?|litres?|l|"
-        r"cm|mm|inches?|inch|in|"
-        r"pinch|dash|handful|cloves?|heads?|bunches?|pieces?|"
-        r"stalks?|sprigs?|cans?|packages?|sticks?)\s+"
-        r")",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
+    # A final identity pass is important: do not allow cleanup residue to
+    # become a new ingredient identity.
+    final_identity = canonical_ingredient_identity(cleaned)
 
-    previous = None
-    while cleaned != previous:
-        previous = cleaned
-
-        cleaned = re.sub(
-            r"^\s*(?:"
-            r"fl\s+oz|oz|kg|grams?|g|ml|liters?|litres?|l|"
-            r"cm|mm|inches?|inch|in|"
-            r"pinch|dash|handful|cloves?|heads?|bunches?|pieces?|"
-            r"stalks?|sprigs?|cans?|packages?|sticks?"
-            r")\s+",
-            "",
-            cleaned,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-        cleaned = re.sub(
-            r"^\s*of\s+",
-            "",
-            cleaned,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    if not cleaned:
+    if not final_identity:
         return ""
 
-    # These are source/editorial words, not ingredient identity.
-    metadata_words = {
-        "roughly", "rough", "lightly", "heavily",
-        "mixed", "torn", "crushed", "smashed",
-        "divided", "optional", "option", "preferred",
-        "preferably", "desired", "needed", "required",
-        "recommended", "favorite", "favourite",
-        "freshly", "approximately", "about",
-        "quick", "additional", "included",
-        "separate", "separately", "remaining",
-    }
-
-    # Remove standalone metadata words first.
-    words = [
-        word for word in cleaned.split()
-        if word not in metadata_words
-    ]
-    cleaned = " ".join(words).strip()
-
-    if not cleaned:
-        return ""
-
-    # Preparation/instruction boundaries.
-    #
-    # Once one of these begins, everything after it is preparation,
-    # cooking, handling, or editorial explanation rather than ingredient
-    # identity. This deliberately preserves meaningful descriptors before
-    # the boundary, including "ground", "lean", "grass fed", "russet",
-    # "baby", "portobello", etc.
-    preparation_patterns = [
-        r"\bcut\s+(?:into|in|off|from|up)\b",
-        r"\bcut\b",
-        r"\bchop(?:ped|ping)?\b",
-        r"\bdice(?:d|ing)?\b",
-        r"\bslice(?:d|s|ing)?\b",
-        r"\bmince(?:d|ing)?\b",
-        r"\bsmash(?:ed|ing)?\b",
-        r"\bcrush(?:ed|ing)?\b",
-        r"\bpeel(?:ed|ing)?\b",
-        r"\btrim(?:med|ming)?\b",
-        r"\bhalve(?:d|s|ing)?\b",
-        r"\bquarter(?:ed|ing)?\b",
-        r"\bshred(?:ded|ding)?\b",
-        r"\bgrate(?:d|ing)?\b",
-        r"\bchiffonade\b",
-        r"\bjulienne\b",
-        r"\broughly\b",
-        r"\blightly\b",
-        r"\bheavily\b",
-        r"\bbrown(?:ed|ing)?\b",
-        r"\bcook(?:ed|ing)?\b",
-        r"\bboil(?:ed|ing)?\b",
-        r"\bsimmer(?:ed|ing)?\b",
-        r"\broasted\b",
-        r"\bbake(?:d|ing)?\b",
-        r"\bsaute(?:d|ing)?\b",
-        r"\bfry(?:ed|ing)?\b",
-        r"\bsear(?:ed|ing)?\b",
-        r"\bgrill(?:ed|ing)?\b",
-        r"\bdrain(?:ed|ing)?\b",
-        r"\bpat(?:ted)?\s+dry\b",
-        r"\bremove(?:d|s|ing)?\b",
-        r"\bremoved\b",
-        r"\bdiscard(?:ed|ing)?\b",
-        r"\btear(?:n|ing)?\b",
-        r"\bskin(?:ned|ning)?\b",
-        r"\bseed(?:ed|ing)?\b",
-        r"\bcore(?:d|ing)?\b",
-        r"\bso\s+(?:dice|chop|slice|cut|cube|halve|peel|trim)\b",
-    ]
-
-    prep_boundary = re.compile(
-        r"(?:\s+|^)(" + "|".join(preparation_patterns) + r")\b",
-        re.IGNORECASE,
-    )
-
-    # Source/editorial boundaries. Everything after these is explanatory
-    # prose rather than ingredient identity.
-    editorial_patterns = [
-        r"\s+a\s+substitute\b",
-        r"\s+substitute(?:s)?\b",
-        r"\s+sub\b",
-        r"\s+if\s+you\b",
-        r"\s+if\s+they\b",
-        r"\s+if\s+it\b",
-        r"\s+use\s+(?:a|an|the|your|any|some)\b",
-        r"\s+make\s+sure\b",
-        r"\s+with\b",
-        r"\s+from\b",
-        r"\s+so\s+(?:dice|chop|slice|cut|cube|halve|peel|trim)\b",
-    ]
-
-    def clean_part(part):
-        part = part.strip()
-        if not part:
-            return ""
-
-        # Reject obvious non-ingredient fragments immediately.
-        invalid_starts = {
-            "a", "an", "the", "and", "or", "of", "to", "for",
-            "with", "from", "use", "so", "if", "as", "in", "into",
-            "off", "on", "up", "down",
-        }
-
-        if part in invalid_starts:
-            return ""
-
-        if any(part.startswith(prefix + " ") for prefix in invalid_starts):
-            return ""
-
-        # Remove editorial/source explanations.
-        for pattern in editorial_patterns:
-            part = re.sub(
-                pattern + r".*$",
-                "",
-                part,
-                flags=re.IGNORECASE,
-            ).strip()
-
-        if not part:
-            return ""
-
-        # Remove preparation instructions from the first preparation
-        # boundary onward.
-        match = prep_boundary.search(part)
-        if match:
-            part = part[:match.start()].strip()
-
-        if not part:
-            return ""
-
-        # Remove trailing metadata/connective wording.
-        part = re.sub(
-            r"\s+(?:roughly|rough|lightly|heavily|from|and|with|"
-            r"if|so|off|up|down)$",
-            "",
-            part,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        # A valid identity cannot end in a connective or instruction word.
-        if not part or part in invalid_starts:
-            return ""
-
-        # Reject fragments that are clearly source instructions rather than
-        # ingredients.
-        instruction_only = {
-            "dice", "chop", "slice", "cut", "cube", "halve",
-            "peel", "trim", "mince", "smash", "crush",
-            "browned", "cooked", "drained", "removed",
-            "roughly", "rough", "lightly", "heavily",
-            "off", "so", "from", "or",
-        }
-
-        if part in instruction_only:
-            return ""
-
-        # Reject prose-like fragments containing only instruction/editorial
-        # vocabulary. This prevents source text such as "if they re you want
-        # the mushrooms to be the same size" from becoming an ingredient.
-        prose_words = {
-            "if", "they", "you", "want", "the", "same", "size",
-            "make", "sure", "use", "your", "some", "any",
-            "removed", "leaves", "stems", "stem", "roughly",
-            "from", "into", "off",
-        }
-
-        part_words = part.split()
-        if part_words and all(word in prose_words for word in part_words):
-            return ""
-
-        return re.sub(r"\s+", " ", part).strip()
-
-    # Clean OR alternatives independently. Invalid alternatives disappear
-    # instead of becoming fake ingredients.
-    parts = re.split(r"\s+or\s+", cleaned, flags=re.IGNORECASE)
-    identities = []
-
-    for part in parts:
-        identity = clean_part(part)
-        if not identity:
-            continue
-
-        if identity not in identities:
-            identities.append(identity)
-
-    if not identities:
-        return ""
-
-    return canonical_ingredient_identity(
-        " or ".join(identities)
-    )
+    return final_identity
 
 def extract_known_ingredient(text):
     # Extract the actual known ingredient while ignoring surrounding
@@ -6910,7 +6648,7 @@ def find_recipes(
             if not isinstance(raw_ingredient, str):
                 continue
 
-            normalized, _ = normalize_recipe_ingredient(
+            normalized, alternatives = normalize_recipe_ingredient(
                 raw_ingredient,
                 preserve_source=True
             )
@@ -6921,15 +6659,25 @@ def find_recipes(
             # A recipe source can contain "or" inside preparation prose.
             # Evaluate each OR side independently and retain only sides that
             # resolve to a real ingredient identity.
-            or_parts = [
-                part.strip(" ,")
-                for part in re.split(
-                    r"\s+or\s+",
-                    normalized,
-                    flags=re.IGNORECASE
+            # Preserve alternatives already identified by the universal
+            # ingredient normalizer. They are part of the authoritative
+            # recipe ingredient identity and must not be discarded.
+            source_parts = [normalized] + list(alternatives or [])
+
+            # A recipe source can contain "or" inside preparation prose.
+            # Evaluate each OR side independently and retain only sides that
+            # resolve to a real ingredient identity.
+            or_parts = []
+            for source_part in source_parts:
+                or_parts.extend(
+                    part.strip(" ,")
+                    for part in re.split(
+                        r"\s+or\s+",
+                        source_part,
+                        flags=re.IGNORECASE
+                    )
+                    if part.strip(" ,")
                 )
-                if part.strip(" ,")
-            ]
 
             identities = []
 
@@ -6943,18 +6691,18 @@ def find_recipes(
                     identity = extract_known_ingredient(part)
 
                 if not identity:
-                    # Preserve legitimate unknown ingredients, but never
-                    # preserve a fragment made entirely from recipe-source
-                    # preparation/connective wording.
-                    words = part.lower().split()
-
-                    if (
-                        not words
-                        or all(word in metadata_fragment_words for word in words)
-                    ):
-                        continue
-
-                    identity = part.strip()
+                    # If neither universal identity extraction nor the
+                    # known-ingredient vocabulary can identify this text,
+                    # do not allow the raw source fragment to become an
+                    # ingredient identity.
+                    #
+                    # The authoritative recipeIngredient source may contain
+                    # quantities, preparation instructions, editorial wording,
+                    # or other non-ingredient text. Unknown legitimate
+                    # ingredients must be handled by the universal identity
+                    # extractor rather than by preserving arbitrary source
+                    # fragments.
+                    continue
 
                 identity = re.sub(r"\s+", " ", identity).strip(" ,")
 
