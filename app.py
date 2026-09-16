@@ -912,7 +912,7 @@ def canonical_ingredient_identity(text):
     text = re.sub(
         r"\b(?:canned|jarred|packaged|prepackaged|"
         r"undrained|granulated|reduced\s+fat|low\s+fat|"
-        r"fat\s+free|nonfat|low\s+sodium|"
+        r"fat\s+free|nonfat|(?:low|reduced)\s+sodium|"
         r"no\s+salt\s+added|unsweetened|"
         r"sugar\s+free)\b",
         " ",
@@ -1049,6 +1049,10 @@ def canonical_ingredient_identity(text):
             r"(?:(?:freshly|fresh)\s+)?"
             r"(?:ground|cracked)\s+"
             r"(?:black|white)\s+pepper",
+            text,
+        )
+        or re.fullmatch(
+            r"coarse\s+(?:black|white)\s+pepper",
             text,
         )
     ):
