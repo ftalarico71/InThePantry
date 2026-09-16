@@ -1019,8 +1019,13 @@ def canonical_ingredient_identity(text):
     # Remove connector/prose tails left after preparation cleanup.
     # Do not treat the "in" from hyphenated ingredient wording such as
     # "bone-in chicken breast" as a connector.
+    #
+    # IMPORTANT:
+    # "and" is not an ingredient boundary. A source entry such as
+    # "garlic and ginger" must remain one complete ingredient identity.
+    # Explicit OR alternatives are handled separately above.
     text = re.sub(
-        r"(?<!-)\s+\b(?:off|from|into|on|in|with|and)\b.*$",
+        r"(?<!-)\s+\b(?:off|from|into|on|in|with)\b.*$",
         "",
         text,
         flags=re.IGNORECASE,
