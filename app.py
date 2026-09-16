@@ -3865,201 +3865,26 @@ def user_facing_ingredient_identity(text):
 
 
 
-def split_combined_recipe_ingredient_entry(text):
+def split_combined_recipe_ingredient_entry(value):
     """
-    Universal boundary repair for recipe sources that incorrectly place
-    multiple ingredient identities into one schema string.
+    Conservatively handle recipe ingredient entries.
 
-    Example:
-        "steak sweet potatoes mushrooms peppercorns sweetcorn mustard red wine"
+    Real ingredient boundaries should come from the recipe source/parser.
+    Do not invent boundaries by guessing where one ingredient ends and
+    another begins from an arbitrary free-form string.
 
-    becomes separate ingredient entries when multiple known ingredient
-    identities can be identified.
-
-    A normal ingredient line is left untouched so the existing metadata
-    normalizer remains authoritative.
-
-    OR expressions remain intact because "or" is a meaningful alternative
-    boundary handled by normalize_recipe_ingredient().
+    OR expressions must remain a single entry so the existing alternative
+    handling can process them correctly.
     """
-    if not isinstance(text, str):
-        return []
+    if not isinstance(value, str):
+        return [value]
 
-    value = text.strip()
+    value = value.strip()
+
     if not value:
         return []
 
-    # Never break a genuine OR expression here. The existing normalizer
-    # already knows how to preserve and normalize recipe alternatives.
-    if re.search(r"\bor\b", value, flags=re.IGNORECASE):
-        return [value]
-
-    cleaned = re.sub(r"\s+", " ", value).strip()
-    if not cleaned:
-        return []
-
-    # Build the same broad vocabulary already used by the identity engine.
-    known = set()
-
-    for variants in CORE_INGREDIENTS.values():
-        known.update(
-            str(item).strip().lower()
-            for item in variants
-            if isinstance(item, str) and item.strip()
-        )
-
-    for category_values in COMMON_INGREDIENTS.values():
-        known.update(
-            str(item).strip().lower()
-            for item in category_values
-            if isinstance(item, str) and item.strip()
-        )
-
-    # Include established canonical identities and common plural forms.
-    known.update({
-        "sirloin steak",
-        "steak",
-        "sweet potatoes",
-        "sweet potato",
-        "mushrooms",
-        "mushroom",
-        "peppercorns",
-        "peppercorn",
-        "sweetcorn",
-        "mustard",
-        "red wine",
-        "green onion",
-        "green onions",
-        "scallion",
-        "scallions",
-        "canola oil",
-        "olive oil",
-        "vegetable oil",
-        "cornstarch",
-        "brown sugar",
-        "ginger",
-        "garlic",
-    })
-
-    known = sorted(
-        known,
-        key=lambda item: (
-            len(item.split()),
-            len(item),
-        ),
-        reverse=True,
-    )
-
-    lower = cleaned.lower()
-    matches = []
-    occupied = []
-
-    for ingredient in known:
-        pattern = (
-            r"(?<![a-z])"
-            + re.escape(ingredient)
-            + r"(?![a-z])"
-        )
-
-        for match in re.finditer(pattern, lower):
-            start = match.start()
-            end = match.end()
-
-            if any(
-                start < existing_end and end > existing_start
-                for existing_start, existing_end in occupied
-            ):
-                continue
-
-            matches.append(
-                (
-                    start,
-                    end,
-                    cleaned[start:end],
-                )
-            )
-            occupied.append((start, end))
-
-    if len(matches) < 2:
-        return [value]
-
-    # Keep the longest identity at each location.
-    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
-
-    selected = []
-    last_end = -1
-
-    for start, end, ingredient in matches:
-        if start < last_end:
-            continue
-        selected.append((start, end, ingredient))
-        last_end = end
-
-    if len(selected) < 2:
-        return [value]
-
-    # Only treat this as a malformed combined ingredient string when the
-    # identified ingredients account for the meaningful words in the entry.
-    # Recipe-site metadata can remain around a single legitimate identity.
-    covered = [False] * len(lower)
-
-    for start, end, _ in selected:
-        for index in range(start, end):
-            covered[index] = True
-
-    remainder = lower
-    for start, end, _ in reversed(selected):
-        remainder = remainder[:start] + " " + remainder[end:]
-
-    remainder_words = re.findall(r"[a-z]+", remainder)
-
-    metadata_words = {
-        "and",
-        "with",
-        "plus",
-        "for",
-        "the",
-        "of",
-        "to",
-        "taste",
-        "fresh",
-        "freshly",
-        "ground",
-        "cracked",
-        "minced",
-        "chopped",
-        "sliced",
-        "diced",
-        "large",
-        "small",
-        "medium",
-        "thick",
-        "thin",
-        "boneless",
-        "bone",
-        "in",
-        "pieces",
-        "piece",
-        "stalk",
-        "stalks",
-        "whole",
-        "reduced",
-        "sodium",
-        "extra",
-        "virgin",
-        "preferred",
-        "preferably",
-    }
-
-    if any(word not in metadata_words for word in remainder_words):
-        return [value]
-
-    return [
-        ingredient.strip()
-        for _, _, ingredient in selected
-        if ingredient.strip()
-    ]
-
+    return [value]
 
 def match_recipe_to_pantry(recipe, pantry_items):
     if not recipe:
@@ -6165,30 +5990,81 @@ def extract_web_recipe(url):
                 ingredients,
                 list
             ):
-                if (
-                    isinstance(ingredients, str)
-                    and "<li" in ingredients.lower()
-                ):
-                    ingredients = re.findall(
-                        r"<li[^>]*>(.*?)</li>",
-                        ingredients,
+                if isinstance(ingredients, str):
+                    # Some recipe sites incorrectly publish the entire
+                    # ingredient list as one space-concatenated schema string.
+                    # Never treat that malformed string as one ingredient.
+                    #
+                    # First recover the actual recipeIngredient elements
+                    # from the page HTML when the site exposes them.
+                    structured_ingredients = re.findall(
+                        r'<[^>]+itemprop=["\\\']recipeIngredient["\\\'][^>]*>'
+                        r'(.*?)'
+                        r'</[^>]+>',
+                        html,
                         re.DOTALL | re.IGNORECASE
                     )
 
-                    ingredients = [
-                        re.sub(r"<[^>]+>", " ", item)
-                        for item in ingredients
-                    ]
+                    if structured_ingredients:
+                        ingredients = [
+                            html_lib.unescape(
+                                re.sub(
+                                    r"<[^>]+>",
+                                    " ",
+                                    item
+                                )
+                            )
+                            for item in structured_ingredients
+                            if re.sub(
+                                r"<[^>]+>",
+                                " ",
+                                item
+                            ).strip()
+                        ]
 
-                    ingredients = [
-                        html_lib.unescape(
-                            re.sub(r"\\s+", " ", item).strip()
+                        ingredients = [
+                            re.sub(
+                                r"\\s+",
+                                " ",
+                                item
+                            ).strip()
+                            for item in ingredients
+                            if item.strip()
+                        ]
+
+                    elif "<li" in ingredients.lower():
+                        ingredients = re.findall(
+                            r"<li[^>]*>(.*?)</li>",
+                            ingredients,
+                            re.DOTALL | re.IGNORECASE
                         )
-                        for item in ingredients
-                        if item.strip()
-                    ]
-                else:
-                    ingredients = [ingredients]
+
+                        ingredients = [
+                            re.sub(
+                                r"<[^>]+>",
+                                " ",
+                                item
+                            )
+                            for item in ingredients
+                        ]
+
+                        ingredients = [
+                            html_lib.unescape(
+                                re.sub(
+                                    r"\\s+",
+                                    " ",
+                                    item
+                                ).strip()
+                            )
+                            for item in ingredients
+                            if item.strip()
+                        ]
+
+                    else:
+                        # The schema supplied one malformed text blob and
+                        # the page did not expose a recoverable ingredient
+                        # list. Reject it rather than inventing boundaries.
+                        ingredients = []
 
             instructions = instruction_text(
                 item.get(
