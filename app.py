@@ -666,7 +666,7 @@ def clean_word(text):
         r"cup|cups|ounce|ounces|oz|"
         r"gram|grams|g|kg|ml|liter|litre|"
         r"pinch|handful|clove|cloves|head|heads|"
-        r"bunch|piece|pieces|dozen)\b",
+        r"bunch|piece|pieces)\b",
         "",
         text
     )
@@ -828,6 +828,22 @@ def canonical_ingredient_identity(text):
                 parts.append(canonical)
         return " or ".join(parts)
 
+    # Pepper-flake products are real ingredients, not pantry-staple
+    # seasoning pepper. Protect them before the generic salt+pepper
+    # staple cleanup below.
+    if re.fullmatch(
+        r"(?:(?:crushed)\s+)?"
+        r"(?:(?:red|green|yellow|orange|black|white)\s+)?"
+        r"pepper\s+flakes?",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return re.sub(
+            r"\s+",
+            " ",
+            text,
+        ).strip().lower()
+
     # Salt + pepper seasoning is entirely a pantry staple.
     # Do not remove real pepper vegetables such as bell/red/green pepper.
     if (
@@ -839,16 +855,6 @@ def canonical_ingredient_identity(text):
         )
     ):
         return ""
-
-    # "No salt added" is a product descriptor, not a standalone
-    # salt ingredient. Remove the complete phrase before the
-    # general salt-staple cleanup runs.
-    text = re.sub(
-        r"\bno\s+salt\s+added\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
 
     # Remove salt in every seasoning/product form.
     salt_seasoning = re.compile(
@@ -896,7 +902,7 @@ def canonical_ingredient_identity(text):
     text = re.sub(
         r"\b(?:grass\s+fed|grassfed|grain\s+fed|pasture\s+raised|"
         r"free\s+range|organic|all\s+natural|natural|lean|"
-        r"extra\s+lean|premium|boneless|skinless|frozen|dry|ripe)\b",
+        r"extra\s+lean|premium|boneless|skinless)\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -922,7 +928,7 @@ def canonical_ingredient_identity(text):
     text = re.sub(
         r"\b(?:canned|jarred|packaged|prepackaged|"
         r"undrained|granulated|reduced\s+fat|low\s+fat|"
-        r"full\s+fat|fat\s+free|nonfat|(?:low|reduced)\s+sodium|"
+        r"fat\s+free|nonfat|low\s+sodium|"
         r"no\s+salt\s+added|unsweetened|"
         r"sugar\s+free)\b",
         " ",
@@ -943,70 +949,6 @@ def canonical_ingredient_identity(text):
         text,
         flags=re.IGNORECASE,
     )
-
-    # ---------------------------------------------------------
-    # UNIVERSAL RECIPE METADATA CLEANUP
-    # ---------------------------------------------------------
-    # Remove descriptive wording that can remain after quantities
-    # and units have already been stripped.
-    #
-    # Examples:
-    #   "inch thick sirloin steak" -> "sirloin steak"
-    #   "thick sirloin steak" -> "sirloin steak"
-    #   "green parts only scallions" -> "scallions"
-    #   "soy sauce if you prefer" -> "soy sauce"
-    #
-    # These words describe size, preparation, presentation, or
-    # editorial preference. They are not ingredient identity.
-
-    text = re.sub(
-        r"\b(?:inch|in)\s+(?:thick|thin)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = re.sub(
-        r"\b(?:thick|thin|roughly|finely|coarsely|"
-        r"green|white|light|dark)\s+"
-        r"(?:parts?|pieces?|sections?)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = re.sub(
-        r"\b(?:thick|thin|tender|roughly|finely|coarsely)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-    # Remove standalone preparation metadata left by phrases such as
-    # "green parts only" or "white parts only".
-    text = re.sub(
-        r"\bonly\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Editorial preference wording is not ingredient identity.
-    text = re.sub(
-        r"\b(?:if\s+)?you\s+prefer\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = re.sub(
-        r"\b(?:as\s+desired|as\s+you\s+prefer|"
-        r"if\s+desired|optional|to\s+your\s+taste)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = re.sub(r"\s+", " ", text).strip()
 
     # Preparation/instruction wording starts the non-identity tail.
     text = re.sub(
@@ -1029,13 +971,8 @@ def canonical_ingredient_identity(text):
     # Remove connector/prose tails left after preparation cleanup.
     # Do not treat the "in" from hyphenated ingredient wording such as
     # "bone-in chicken breast" as a connector.
-    #
-    # IMPORTANT:
-    # "and" is not an ingredient boundary. A source entry such as
-    # "garlic and ginger" must remain one complete ingredient identity.
-    # Explicit OR alternatives are handled separately above.
     text = re.sub(
-        r"(?<!-)\s+\b(?:off|from|into|on|in|with)\b.*$",
+        r"(?<!-)\s+\b(?:off|from|into|on|in|with|and)\b.*$",
         "",
         text,
         flags=re.IGNORECASE,
@@ -1059,10 +996,6 @@ def canonical_ingredient_identity(text):
             r"(?:(?:freshly|fresh)\s+)?"
             r"(?:ground|cracked)\s+"
             r"(?:black|white)\s+pepper",
-            text,
-        )
-        or re.fullmatch(
-            r"coarse\s+(?:black|white)\s+pepper",
             text,
         )
     ):
@@ -1265,6 +1198,22 @@ def ingredient_alias(text):
 
     if text == 'lean ground beef':
         result = 'ground beef'
+        _INGREDIENT_ALIAS_CACHE[raw_text] = result
+        return result
+
+    # Pepper-flake products are real ingredient identities.
+    # Preserve them before typo correction can collapse them into
+    # the standalone pantry-staple identity "pepper".
+    pepper_flake_identity = re.fullmatch(
+        r"(?:crushed\s+)?"
+        r"(?:red|green|yellow|orange|black|white)?\s*"
+        r"pepper\s+flakes?",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if pepper_flake_identity:
+        result = re.sub(r"\s+", " ", text).strip().lower()
         _INGREDIENT_ALIAS_CACHE[raw_text] = result
         return result
 
@@ -3383,6 +3332,32 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
             continue
 
         # -----------------------------------------------------
+        # PEPPER-FLAKE PRODUCT MATCHING
+        # -----------------------------------------------------
+        # Pepper flakes are their own ingredient family. They must
+        # not fall into the generic pepper hierarchy below.
+        # -----------------------------------------------------
+        pepper_flake_pattern = re.compile(
+            r"(?:(?:crushed)\\s+)?"
+            r"(?:(?:red|green|yellow|orange|black|white)\\s+)?"
+            r"pepper\\s+flakes?",
+            re.IGNORECASE,
+        )
+
+        recipe_is_pepper_flakes = bool(
+            pepper_flake_pattern.fullmatch(recipe_name)
+        )
+        user_is_pepper_flakes = bool(
+            pepper_flake_pattern.fullmatch(user_name)
+        )
+
+        if recipe_is_pepper_flakes or user_is_pepper_flakes:
+            if recipe_is_pepper_flakes and user_is_pepper_flakes:
+                if recipe_name == user_name:
+                    return True
+            continue
+
+        # -----------------------------------------------------
         # PEPPER VARIANT HIERARCHY
         # -----------------------------------------------------
         # Generic pantry pepper may satisfy a specific pepper
@@ -3883,27 +3858,33 @@ def user_facing_ingredient_identity(text):
     return value
 
 
+def _preserve_pepper_flake_identity(raw_text, normalized_text):
+    """Keep pepper-flake products as real ingredient identities."""
+    if not isinstance(raw_text, str):
+        return normalized_text
 
-def split_combined_recipe_ingredient_entry(value):
-    """
-    Conservatively handle recipe ingredient entries.
+    source = raw_text.strip().lower()
 
-    Real ingredient boundaries should come from the recipe source/parser.
-    Do not invent boundaries by guessing where one ingredient ends and
-    another begins from an arbitrary free-form string.
+    match = re.fullmatch(
+        r"(?:\d+(?:\.\d+)?\s*)?"
+        r"(?:crushed\s+)?"
+        r"(?:red|green|yellow|orange|black|white)?\s*"
+        r"pepper\s+flakes?",
+        source,
+        flags=re.IGNORECASE,
+    )
 
-    OR expressions must remain a single entry so the existing alternative
-    handling can process them correctly.
-    """
-    if not isinstance(value, str):
-        return [value]
+    if match:
+        identity = re.sub(
+            r"^\s*\d+(?:\.\d+)?\s*",
+            "",
+            source,
+        )
+        identity = re.sub(r"\s+", " ", identity).strip().lower()
+        return identity
 
-    value = value.strip()
+    return normalized_text
 
-    if not value:
-        return []
-
-    return [value]
 
 def match_recipe_to_pantry(recipe, pantry_items):
     if not recipe:
@@ -3914,6 +3895,11 @@ def match_recipe_to_pantry(recipe, pantry_items):
     for item in pantry_items or []:
         normalized, _ = normalize_recipe_ingredient(
             item
+        )
+
+        normalized = _preserve_pepper_flake_identity(
+            item,
+            normalized,
         )
 
         if normalized:
@@ -3971,17 +3957,10 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
     requirements = {}
 
-    recipe_entries = []
-
     for original in recipe.get(
         "ingredients",
         []
     ):
-        recipe_entries.extend(
-            split_combined_recipe_ingredient_entry(original)
-        )
-
-    for original in recipe_entries:
         # Some recipe websites combine multiple ingredients
         # into one schema line, for example:
         # "diced scallions + toasted sesame seeds"
@@ -4007,11 +3986,10 @@ def match_recipe_to_pantry(recipe, pantry_items):
             if not stripped:
                 continue
 
-            # A comma normally separates ingredient metadata from the
-            # ingredient identity, not separate recipe ingredients.
-            # Keep the complete entry intact and let the universal
-            # identity normalizer remove metadata.
-            comma_parts = [stripped]
+            # Split comma-separated recipe ingredients normally.
+            # OR alternatives are handled separately by the normalizer.
+            comma_parts = re.split(r'\s*,\s*', stripped)
+
 
             for comma_part in comma_parts:
                 text = comma_part.strip()
@@ -4036,21 +4014,37 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 # If salt-and-pepper seasoning was removed and the
                 # remaining words contain no known ingredient, the
                 # remainder is recipe wording rather than an ingredient.
+                #
+                # Pepper-flake products are real ingredients, not pantry
+                # staple seasoning pepper. Preserve them even though they
+                # contain the word "pepper".
+                is_pepper_flake = bool(
+                    re.fullmatch(
+                        r"(?:(?:crushed)\s+)?"
+                        r"(?:(?:red|green|yellow|orange|black|white)\s+)?"
+                        r"pepper\s+flakes?",
+                        text,
+                        flags=re.IGNORECASE,
+                    )
+                )
+
                 if (
                     not extract_known_ingredient(text)
                     and re.search(r'(?i)\bsalt\b|\bpepper\b', comma_part)
+                    and not is_pepper_flake
                 ):
                     continue
 
                 if not text:
                     continue
 
-                # Keep the complete source ingredient entry intact.
-                # The universal ingredient normalizer is responsible for
-                # identifying the ingredient and handling legitimate OR
-                # alternatives. Never invent ingredient boundaries by
-                # splitting on the word "and".
-                compound_parts.append(text)
+                # Now split genuine ingredients joined by "and".
+                subparts = re.split(r'\s+and\s+', text, flags=re.IGNORECASE)
+                compound_parts.extend(
+                    subpart.strip()
+                    for subpart in subparts
+                    if subpart.strip()
+                )
 
         parts = compound_parts
 
@@ -4063,17 +4057,10 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
         elif re.search(r'\beach\s*:\s*', original, re.IGNORECASE):
 
-            # Remove the recipe-site "each:" label, but keep the resulting
-            # ingredient entry intact. Do not invent boundaries by splitting
-            # on "and".
-            each_text = re.sub(
-                r'^.*?\beach\s*:\s*',
-                '',
-                original,
-                flags=re.IGNORECASE
-            ).strip()
+            each_text = re.sub(r'^.*?\beach\s*:\s*', '', original, flags=re.IGNORECASE)
 
-            parts = [each_text] if each_text else []
+            parts = re.split(r'\s*,\s*|\s+and\s+', each_text, flags=re.IGNORECASE)
+            parts = [re.sub(r'^and\s+', '', part, flags=re.IGNORECASE).strip() for part in parts]
 
         for part in parts:
             normalized, alternatives = (
@@ -4083,6 +4070,11 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 )
             )
 
+            normalized = _preserve_pepper_flake_identity(
+                part,
+                normalized,
+            )
+
             if not normalized:
                 continue
 
@@ -4090,6 +4082,25 @@ def match_recipe_to_pantry(recipe, pantry_items):
             # A recipe clearly identified as beef can use
             # generic "stew meat" when the pantry contains beef.
             # This does NOT change the general ingredient rules.
+
+            # Pepper-flake products are real ingredients, not pantry
+            # staple seasoning pepper. Protect them before the staple
+            # exclusion below.
+            if re.fullmatch(
+                r"(?:(?:crushed)\s+)?"
+                r"(?:(?:red|green|yellow|orange|black|white)\s+)?"
+                r"pepper\s+flakes?",
+                normalized,
+                flags=re.IGNORECASE,
+            ):
+                requirements.setdefault(
+                    normalized,
+                    {
+                        "original": normalized,
+                        "alternatives": alternatives,
+                    },
+                )
+                continue
 
             # Salt and pepper are universal pantry staples.
             # They must never become recipe requirements, regardless
@@ -5302,7 +5313,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
 
 
     text = re.sub(
-        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
+        r'\b(?:diced|chopped|minced|cubed|sliced|halved|fresh|freshly|finely|uncooked|cooked|beaten|whisked|grated|shredded|well|low sodium|toasted|dried|peeled|thinly|boneless|skinless|bone[ -]in|skin[ -]on|raw|each|slice|slices|strip|strips|piece|pieces|chunk|chunks|wedge|wedges|stalk|stalks|spear|spears|ear|ears|knob|knobs|sprig|sprigs|sheet|sheets|stem|stems|pod|pods|rinsed|rinsed|seeds|seed|veins|vein|packed)\b',
         ' ',
         text,
         flags=re.IGNORECASE
@@ -6015,81 +6026,30 @@ def extract_web_recipe(url):
                 ingredients,
                 list
             ):
-                if isinstance(ingredients, str):
-                    # Some recipe sites incorrectly publish the entire
-                    # ingredient list as one space-concatenated schema string.
-                    # Never treat that malformed string as one ingredient.
-                    #
-                    # First recover the actual recipeIngredient elements
-                    # from the page HTML when the site exposes them.
-                    structured_ingredients = re.findall(
-                        r'<[^>]+itemprop=["\\\']recipeIngredient["\\\'][^>]*>'
-                        r'(.*?)'
-                        r'</[^>]+>',
-                        html,
+                if (
+                    isinstance(ingredients, str)
+                    and "<li" in ingredients.lower()
+                ):
+                    ingredients = re.findall(
+                        r"<li[^>]*>(.*?)</li>",
+                        ingredients,
                         re.DOTALL | re.IGNORECASE
                     )
 
-                    if structured_ingredients:
-                        ingredients = [
-                            html_lib.unescape(
-                                re.sub(
-                                    r"<[^>]+>",
-                                    " ",
-                                    item
-                                )
-                            )
-                            for item in structured_ingredients
-                            if re.sub(
-                                r"<[^>]+>",
-                                " ",
-                                item
-                            ).strip()
-                        ]
+                    ingredients = [
+                        re.sub(r"<[^>]+>", " ", item)
+                        for item in ingredients
+                    ]
 
-                        ingredients = [
-                            re.sub(
-                                r"\\s+",
-                                " ",
-                                item
-                            ).strip()
-                            for item in ingredients
-                            if item.strip()
-                        ]
-
-                    elif "<li" in ingredients.lower():
-                        ingredients = re.findall(
-                            r"<li[^>]*>(.*?)</li>",
-                            ingredients,
-                            re.DOTALL | re.IGNORECASE
+                    ingredients = [
+                        html_lib.unescape(
+                            re.sub(r"\\s+", " ", item).strip()
                         )
-
-                        ingredients = [
-                            re.sub(
-                                r"<[^>]+>",
-                                " ",
-                                item
-                            )
-                            for item in ingredients
-                        ]
-
-                        ingredients = [
-                            html_lib.unescape(
-                                re.sub(
-                                    r"\\s+",
-                                    " ",
-                                    item
-                                ).strip()
-                            )
-                            for item in ingredients
-                            if item.strip()
-                        ]
-
-                    else:
-                        # The schema supplied one malformed text blob and
-                        # the page did not expose a recoverable ingredient
-                        # list. Reject it rather than inventing boundaries.
-                        ingredients = []
+                        for item in ingredients
+                        if item.strip()
+                    ]
+                else:
+                    ingredients = [ingredients]
 
             instructions = instruction_text(
                 item.get(
