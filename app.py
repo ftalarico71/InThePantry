@@ -5530,78 +5530,327 @@ def normalize_recipe_metadata(value):
 
 def extract_ingredient_identity(text):
     """
-    Extract the actual ingredient identity from a recipe ingredient record.
+    Extract only the actual ingredient identity from a recipe ingredient
+    record.
 
-    The source record is authoritative, but editorial/preparation language,
-    quantities, serving directions, preference clauses, and other non-identity
-    text must never become part of the ingredient identity.
+    The source record is authoritative, but quantities, units, preparation
+    instructions, serving directions, preference clauses, quality
+    descriptors, and other recipe prose must never become part of the
+    ingredient identity.
 
-    This function deliberately works as an identity extractor rather than
-    treating every surviving source word as an ingredient.
+    Identity extraction is intentionally vocabulary-aware: an established
+    ingredient identity is preferred before generic grammatical
+    transformations are allowed to alter the phrase.
     """
-    if text is None:
+    if not isinstance(text, str):
         return ""
 
-    source = str(text).strip()
-
-    if not source:
+    text = text.strip()
+    if not text:
         return ""
 
-    # First use the existing canonical cleanup pipeline.
-    cleaned = canonical_ingredient_identity(source)
+    # Remove parenthetical source/editorial material.
+    text = re.sub(r"\([^)]*\)", " ", text)
 
-    if not cleaned:
+    text = text.lower()
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"[;|]+", ",", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
         return ""
 
-    # Remove parenthetical editorial/preparation information.
-    cleaned = re.sub(r"\([^)]*\)", " ", cleaned)
+    # Only the first source alternative is handled here. The caller already
+    # processes explicit alternatives separately.
+    text = re.split(
+        r"\s+(?:or|alternatively)\s+",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
 
-    # Remove common trailing editorial/preference clauses.
-    cleaned = re.sub(
-        r"\s+(?:if|as|when|unless)\s+(?:you\s+)?(?:prefer|like|want|wish|needed|available)\b.*$",
-        "",
-        cleaned,
+    # Remove quantity/unit prefixes without touching the ingredient itself.
+    quantity_prefix = re.compile(
+        r"^\s*"
+        r"(?:\d+(?:\s+\d+/\d+)?|\d+/\d+|[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])"
+        r"(?:\s*[-–]\s*"
+        r"(?:\d+(?:\s+\d+/\d+)?|\d+/\d+|[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]))?"
+        r"(?:\s+(?:tablespoons?|tbsp|tbs|teaspoons?|tsp|cups?|"
+        r"ounces?|oz|pounds?|lbs?|grams?|g|kilograms?|kg|"
+        r"milliliters?|ml|liters?|litres?|l|pinches?|dashes?|"
+        r"handfuls?|cloves?|heads?|bunches?|pieces?|sticks?|cans?|"
+        r"packages?|packs?|slices?|sprigs?|stalks?|fillets?|"
+        r"servings?|portions?))?"
+        r"\s+",
         flags=re.IGNORECASE,
     )
+    text = quantity_prefix.sub("", text, count=1).strip()
 
-    cleaned = re.sub(
-        r"\s+for\s+(?:gluten[- ]free|dairy[- ]free|vegan|vegetarian|serving|garnish|decoration)\b.*$",
-        "",
-        cleaned,
+    # Establish the ingredient boundary BEFORE vocabulary matching.
+    # This is the critical distinction between identifying an ingredient
+    # and treating every surviving source word as part of its identity.
+    boundary_pattern = re.compile(
+        r"\s*(?:,\s*)?"
+        r"(?:"
+        r"if|unless|when|while|although|"
+        r"for\s+(?:serving|garnish|garnishing|drizzling|drizzle|"
+        r"decoration|decorating|topping|serving)|"
+        r"as\s+(?:needed|desired)|"
+        r"to\s+(?:taste|serve|garnish|garnishing|drizzle|drizzling)|"
+        r"divided|reserved"
+        r")\b.*$",
         flags=re.IGNORECASE,
     )
+    text = boundary_pattern.sub("", text).strip()
 
-    # Remove explicit alternative/preparation prose while preserving the
-    # ingredient before the clause. Alternative ingredients are handled
-    # separately by normalize_recipe_ingredient().
-    cleaned = re.sub(
-        r"\s+(?:if|when|unless)\s+.*$",
-        "",
-        cleaned,
+    # Preparation/state words are recipe instructions, not ingredient
+    # identity. Include grammatical forms such as "juiced" as well as
+    # their common base forms.
+    preparation_pattern = re.compile(
+        r"\s+\b(?:"
+        r"roughly|rough|lightly|heavily|"
+        r"chopped|chop|"
+        r"diced|dice|"
+        r"sliced|slice|"
+        r"cubed|cube|"
+        r"minced|mince|"
+        r"mashed|mash|"
+        r"crushed|crush|"
+        r"smashed|smash|"
+        r"grated|grate|"
+        r"shredded|shred|"
+        r"julienned|julienne|"
+        r"juiced|juice|"
+        r"zested|zest|"
+        r"quartered|quarter|"
+        r"halved|halve|"
+        r"peeled|peel|"
+        r"trimmed|trim|"
+        r"browned|brown|"
+        r"cooked|cook|uncooked|"
+        r"drained|drain|"
+        r"rinsed|rinse|"
+        r"washed|wash|"
+        r"roasted|roast|"
+        r"baked|bake|"
+        r"boiled|boil|"
+        r"sauteed|saute|sautéed|sauté|"
+        r"fried|fry|"
+        r"grilled|grill|"
+        r"seared|sear|"
+        r"steamed|steam|"
+        r"thawed|thaw|"
+        r"softened|soften|"
+        r"melted|melt|"
+        r"quartered|quarter|"
+        r"cut|cutting"
+        r")\b.*$",
         flags=re.IGNORECASE,
     )
+    text = preparation_pattern.sub("", text).strip()
 
-    # Remove trailing preparation/instruction language.
-    cleaned = re.sub(
-        r"\s+(?:to\s+taste|as\s+needed|as\s+desired|for\s+serving|for\s+garnish|for\s+garnishing)\b.*$",
-        "",
-        cleaned,
+    # Remove generic quality/state descriptors. These describe the
+    # ingredient but are not part of its canonical identity.
+    descriptor_pattern = re.compile(
+        r"\b(?:"
+        r"fresh|freshly|organic|natural|"
+        r"grass\s+fed|grain\s+fed|pasture\s+raised|free\s+range|"
+        r"lean|extra\s+lean|premium|"
+        r"boneless|skinless|"
+        r"low\s+sodium|reduced\s+sodium|"
+        r"low\s+fat|reduced\s+fat|fat\s+free|nonfat|"
+        r"unsweetened|sugar\s+free|"
+        r"canned|jarred|packaged|prepackaged|undrained|"
+        r"granulated"
+        r")\b\s*",
         flags=re.IGNORECASE,
     )
+    text = descriptor_pattern.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
 
-    # Remove dangling punctuation left by editorial removal.
-    cleaned = re.sub(r"[,:;]+\s*$", "", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    if not cleaned:
+    if not text:
         return ""
 
-    # A final identity pass is important: do not allow cleanup residue to
-    # become a new ingredient identity.
-    final_identity = canonical_ingredient_identity(cleaned)
+    # Build the established ingredient vocabulary. Vocabulary matching
+    # always takes priority over grammatical singularization.
+    known = set()
+
+    for source_name in (
+        "CORE_INGREDIENTS",
+        "COMMON_INGREDIENTS",
+    ):
+        source = globals().get(source_name, [])
+        if isinstance(source, dict):
+            source = source.keys()
+
+        try:
+            known.update(
+                str(item).strip().lower()
+                for item in source
+                if isinstance(item, str) and str(item).strip()
+            )
+        except TypeError:
+            pass
+
+    try:
+        known.update(
+            str(item).strip().lower()
+            for item in _get_ingredient_alias_candidates()
+            if isinstance(item, str) and str(item).strip()
+        )
+    except Exception:
+        pass
+
+    known = {
+        item
+        for item in known
+        if item
+    }
+
+    known_ordered = sorted(
+        known,
+        key=lambda item: (len(item.split()), len(item)),
+        reverse=True,
+    )
+
+    # First try the complete isolated phrase exactly as written.
+    candidate = re.sub(r"\s+", " ", text).strip()
+
+    for ingredient in known_ordered:
+        if re.fullmatch(
+            re.escape(ingredient),
+            candidate,
+            flags=re.IGNORECASE,
+        ):
+            identity = canonical_ingredient_identity(ingredient)
+            if identity:
+                return identity
+
+    # Generic grammatical singularization is deliberately applied only
+    # after exact vocabulary recognition. This prevents words such as
+    # "molasses" from becoming "molass" and preserves established plural
+    # identities such as "red pepper flakes".
+    def singularize_word(word):
+        irregular = {
+            "wives": "wives",
+            "knives": "knives",
+            "lives": "lives",
+            "leaves": "leaves",
+            "halves": "halves",
+            "selves": "selves",
+            "shelves": "shelves",
+            "series": "series",
+            "species": "species",
+            "molasses": "molasses",
+        }
+
+        if word in irregular:
+            return irregular[word]
+
+        if len(word) <= 3:
+            return word
+
+        if word.endswith("ies"):
+            return word[:-3] + "y"
+
+        if word.endswith(("sses", "shes", "ches", "xes", "zes")):
+            return word[:-2]
+
+        # Never strip the final s from words ending in double-s.
+        if word.endswith("ss"):
+            return word
+
+        if word.endswith("s") and not word.endswith(
+            ("us", "is", "ss")
+        ):
+            return word[:-1]
+
+        return word
+
+    singular_words = [
+        singularize_word(word)
+        for word in candidate.split()
+    ]
+    singular_candidate = " ".join(singular_words).strip()
+
+    # Check the grammatically singular form against the established
+    # vocabulary. This handles generic cases such as lemons, berries,
+    # carrots, and chicken breasts without ingredient-specific patches.
+    for ingredient in known_ordered:
+        if re.fullmatch(
+            re.escape(ingredient),
+            singular_candidate,
+            flags=re.IGNORECASE,
+        ):
+            identity = canonical_ingredient_identity(ingredient)
+            if identity:
+                return identity
+
+    # Let the existing alias layer recognize compound/product identities
+    # such as red pepper flakes, flavored oils, and similar established
+    # ingredient forms.
+    for current in (candidate, singular_candidate):
+        if not current:
+            continue
+
+        aliased = ingredient_alias(current)
+
+        if aliased:
+            identity = canonical_ingredient_identity(aliased)
+            if identity:
+                return identity
+
+    # Conservative fallback: canonicalize only the already-isolated
+    # grammatically singular ingredient phrase. Established vocabulary
+    # identities were checked first, so plural identities such as
+    # "red pepper flakes" are preserved above.
+    final_identity = canonical_ingredient_identity(singular_candidate)
 
     if not final_identity:
         return ""
+
+    # UNIVERSAL FINAL GRAMMATICAL SINGULARIZATION
+    # The ingredient identity has already been isolated. Apply the same
+    # conservative singularization to ordinary plural ingredient names,
+    # while protecting known ingredient identities and irregular plurals.
+    if final_identity and final_identity not in known_ordered:
+        protected_plural = {
+            "wives",
+            "knives",
+            "lives",
+            "leaves",
+            "halves",
+            "selves",
+            "shelves",
+            "series",
+            "species",
+            "molasses",
+        }
+
+        words = final_identity.split()
+        singular_words = []
+
+        for word in words:
+            if word in protected_plural:
+                singular_words.append(word)
+            elif word.endswith("ies") and len(word) > 3:
+                singular_words.append(word[:-3] + "y")
+            elif (
+                word.endswith(("sses", "shes", "ches", "xes", "zes"))
+                and len(word) > 3
+            ):
+                singular_words.append(word[:-2])
+            elif word.endswith(("ss", "us", "is")):
+                singular_words.append(word)
+            elif word.endswith("s") and len(word) > 1:
+                singular_words.append(word[:-1])
+            else:
+                singular_words.append(word)
+
+        singular_candidate = " ".join(singular_words).strip()
+
+        if singular_candidate and singular_candidate != final_identity:
+            final_identity = canonical_ingredient_identity(singular_candidate)
 
     return final_identity
 
