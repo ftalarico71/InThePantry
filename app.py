@@ -5713,23 +5713,13 @@ def extract_ingredient_identity(text):
         reverse=True,
     )
 
-    # First try the complete isolated phrase exactly as written.
+    # First isolate the candidate phrase.
     candidate = re.sub(r"\s+", " ", text).strip()
 
-    for ingredient in known_ordered:
-        if re.fullmatch(
-            re.escape(ingredient),
-            candidate,
-            flags=re.IGNORECASE,
-        ):
-            identity = canonical_ingredient_identity(ingredient)
-            if identity:
-                return identity
-
     # Generic grammatical singularization is deliberately applied only
-    # after exact vocabulary recognition. This prevents words such as
-    # "molasses" from becoming "molass" and preserves established plural
-    # identities such as "red pepper flakes".
+    # after exact vocabulary recognition. Established plural ingredient
+    # identities are preserved unless their singular form is itself a
+    # recognized ingredient identity.
     def singularize_word(word):
         irregular = {
             "wives": "wives",
@@ -5753,6 +5743,13 @@ def extract_ingredient_identity(text):
         if word.endswith("ies"):
             return word[:-3] + "y"
 
+        # Common plural nouns ending in -oes form their singular
+        # by removing -es rather than only the final -s.
+        # Examples: tomatoes -> tomato, potatoes -> potato,
+        # heroes -> hero, mangoes -> mango.
+        if word.endswith("oes") and len(word) > 3:
+            return word[:-2]
+
         if word.endswith(("sses", "shes", "ches", "xes", "zes")):
             return word[:-2]
 
@@ -5773,13 +5770,59 @@ def extract_ingredient_identity(text):
     ]
     singular_candidate = " ".join(singular_words).strip()
 
-    # Check the grammatically singular form against the established
-    # vocabulary. This handles generic cases such as lemons, berries,
-    # carrots, and chicken breasts without ingredient-specific patches.
+    # Prefer the grammatically singular ingredient whenever it is
+    # itself an established ingredient identity. This is evaluated
+    # BEFORE accepting an established plural vocabulary entry.
+    #
+    # Examples:
+    #   chicken breasts -> chicken breast
+    #   lemons          -> lemon
+    #   berries         -> berry
+    #
+    # Established plural identities such as red pepper flakes remain
+    # plural when their singular form is not an established ingredient.
+    if singular_candidate != candidate:
+        for ingredient in known_ordered:
+            if re.fullmatch(
+                re.escape(ingredient),
+                singular_candidate,
+                flags=re.IGNORECASE,
+            ):
+                identity = canonical_ingredient_identity(ingredient)
+                if identity:
+                    return identity
+
+    # Before accepting an exact single-word plural vocabulary entry,
+    # prefer its grammatical singular when that singular produces a
+    # valid canonical ingredient identity.
+    #
+    # This is intentionally limited to single-word candidates. Compound
+    # identities such as "red pepper flakes" must remain intact.
+    if (
+        len(candidate.split()) == 1
+        and singular_candidate
+        and singular_candidate != candidate
+    ):
+        singular_identity = canonical_ingredient_identity(
+            singular_candidate
+        )
+
+        if singular_identity and singular_identity != candidate:
+            return singular_identity
+
+    # Now accept an exact established vocabulary identity.
+    # This preserves legitimate plural identities and non-count nouns
+    # whose singularization does not change the candidate:
+    #   red pepper flakes
+    #   asparagus
+    #   glass
+    #   molasses
+    #   wives
+    #   knives
     for ingredient in known_ordered:
         if re.fullmatch(
             re.escape(ingredient),
-            singular_candidate,
+            candidate,
             flags=re.IGNORECASE,
         ):
             identity = canonical_ingredient_identity(ingredient)
@@ -5835,6 +5878,8 @@ def extract_ingredient_identity(text):
                 singular_words.append(word)
             elif word.endswith("ies") and len(word) > 3:
                 singular_words.append(word[:-3] + "y")
+            elif word.endswith("oes") and len(word) > 3:
+                singular_words.append(word[:-2])
             elif (
                 word.endswith(("sses", "shes", "ches", "xes", "zes"))
                 and len(word) > 3
