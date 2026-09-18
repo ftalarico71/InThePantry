@@ -6395,47 +6395,24 @@ def extract_ingredient_identity(text):
     # AUTHORITATIVE POST-CLEANUP IDENTITY RESOLUTION
     # -------------------------------------------------------------
     #
-    # Source/editorial cleanup above can transform a scraped phrase
-    # into a valid ingredient identity. Resolve that cleaned identity
-    # against the canonical vocabulary BEFORE the alias layer.
+    # The source/editorial boundary has now been applied. Resolve the
+    # cleaned candidate through the existing alias/canonical pipeline.
     #
-    # This is intentionally universal:
+    # The important rule here is that an identity returned by the
+    # established alias system is authoritative. It does not have to
+    # appear verbatim in the raw vocabulary set.
     #
-    #   fresh ginger, if desired     -> ginger
-    #   and ginger                   -> ginger
-    #   gingerroot                   -> ginger
-    #   shiitake mushrooms           -> shiitake mushroom
+    # This keeps the extractor universal:
     #
-    # The extractor must identify the ingredient only after the source
-    # boundary has been applied. This prevents valid identities from
-    # being lost simply because the original source wording contained
-    # editorial or grammatical material.
+    #   fresh ginger, if desired -> ginger
+    #   and ginger             -> ginger
+    #   gingerroot             -> ginger
+    #   shiitake mushrooms     -> shiitake mushroom
+    #
+    # No ingredient-specific exception is required.
     # -------------------------------------------------------------
 
-    for current in (candidate, singular_candidate):
-        if not current:
-            continue
-
-        normalized_current = re.sub(
-            r"\\s+",
-            " ",
-            current,
-        ).strip()
-
-        if not normalized_current:
-            continue
-
-        if normalized_current in known_identities:
-            identity = canonical_ingredient_identity(
-                normalized_current
-            )
-            if identity:
-                return identity
-
-    # Let the existing alias layer recognize compound/product identities
-    # such as red pepper flakes, flavored oils, and similar established
-    # ingredient forms.
-    for current in (candidate, singular_candidate):
+    for current in (singular_candidate, candidate):
         if not current:
             continue
 
@@ -6449,18 +6426,36 @@ def extract_ingredient_identity(text):
         if not identity:
             continue
 
-        # Universal identity boundary:
-        #
-        # 1. Established ingredient identities are always accepted.
-        # 2. Multi-word source identities are preserved when they
-        #    survive canonicalization. This is important for legitimate
-        #    products/ingredients such as "crispy chili oil" and
-        #    "red pepper flakes".
-        # 3. Unknown standalone words are not promoted into ingredients.
-        #
-        # This prevents editorial leftovers such as "fire" and
-        # "topping" without maintaining an ingredient-specific blocklist.
-        if identity in known_identities or len(identity.split()) > 1:
+        # If the cleaned candidate is already singular, accept a
+        # canonical identity returned by the established alias layer.
+        if current == singular_candidate:
+            if identity in known_identities or len(identity.split()) > 1:
+                return identity
+
+        # For a plural candidate, prefer the singularized form whenever
+        # its alias/canonical identity resolves differently.
+        if current == candidate and singular_candidate != candidate:
+            singular_aliased = ingredient_alias(singular_candidate)
+
+            if singular_aliased:
+                singular_identity = canonical_ingredient_identity(
+                    singular_aliased
+                )
+
+                if singular_identity:
+                    if (
+                        singular_identity != identity
+                        or singular_identity in known_identities
+                        or len(singular_identity.split()) > 1
+                    ):
+                        return singular_identity
+
+        # Established single-word identities are accepted only when the
+        # alias system confirms them as a known canonical identity.
+        if (
+            identity in known_identities
+            or len(identity.split()) > 1
+        ):
             return identity
 
     # Do not promote arbitrary leftover source text into an ingredient.
