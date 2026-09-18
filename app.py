@@ -4508,7 +4508,7 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
         # Skip standard pantry staples entirely from having or missing counts
         # Force combined staple and spice strings to separate cleanly from total scores
-        if matches(name) or contextual_match or ingredient_matches(name, list(pantry)):
+        if matches(name) or contextual_match:
             display_name = user_facing_ingredient_identity(name)
             if display_name:
                 have.append({
