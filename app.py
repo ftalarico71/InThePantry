@@ -972,7 +972,7 @@ def canonical_ingredient_identity(text):
     # Do not treat the "in" from hyphenated ingredient wording such as
     # "bone-in chicken breast" as a connector.
     text = re.sub(
-        r"(?<!-)\s+\b(?:off|from|into|on|in|with|and)\b.*$",
+        r"(?<!-)\s+\b(?:off|out|from|into|on|in|with|and)\b.*$",
         "",
         text,
         flags=re.IGNORECASE,
@@ -5991,6 +5991,7 @@ def extract_ingredient_identity(text):
         r"steamed|steam|"
         r"thawed|thaw|"
         r"softened|soften|"
+        r"seeded|seed|"
         r"melted|melt|"
         r"quartered|quarter|"
         r"cut|cutting"
@@ -6006,6 +6007,8 @@ def extract_ingredient_identity(text):
         r"fresh|freshly|organic|natural|"
         r"grass\s+fed|grain\s+fed|pasture\s+raised|free\s+range|"
         r"lean|extra\s+lean|premium|"
+        r"sized|heaping|"
+        r"room\s+temperature|"
         r"boneless|skinless|"
         r"low\s+sodium|reduced\s+sodium|"
         r"low\s+fat|reduced\s+fat|fat\s+free|nonfat|"
@@ -6179,59 +6182,65 @@ def extract_ingredient_identity(text):
             if identity:
                 return identity
 
-    # Recover an established ingredient from surrounding scraped/source
-    # words when the complete phrase is not itself an ingredient identity.
+    # Remove universal source/editorial noise from the edges of the
+    # candidate before vocabulary matching. These are grammatical/source
+    # artifacts, not ingredient identities.
+    text = re.sub(
+        r"^\s*(?:a|an|the|and|with|of)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Remove trailing source/editorial direction phrases. These phrases
+    # describe where/how the ingredient is used, not the ingredient itself.
     #
-    # This is deliberately vocabulary-driven rather than a growing list
-    # of individual bad words. It handles source contamination such as:
-    #   "sized garlic" -> "garlic"
-    #   "sized onion" -> "onion"
-    #   "tomatoes seeded" -> "tomato"
-    #   "and ginger" -> "ginger"
+    # Examples:
     #   "water out the sauce" -> "water"
-    #
-    # The longest established identity wins, so legitimate compound
-    # ingredients such as "crispy chili oil" remain intact.
-    source_words = re.findall(r"[a-z]+", candidate)
-    recovered_identity = ""
+    #   "garlic from the pan" -> "garlic"
+    #   "onion into the skillet" -> "onion"
+    #   "ginger with the vegetables" -> "ginger"
+    text = re.sub(
+        r"\s+(?:out|from|into|onto|on|in|with)\b"
+        r"(?:\s+(?:the|a|an))?"
+        r"(?:\s+\w+){0,8}\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
 
-    if len(source_words) > 1:
-        for ingredient in known_ordered:
-            ingredient_words = ingredient.split()
+    # A trailing conjunction introduces additional source/editorial text.
+    # Only strip it when it is followed by additional words; legitimate
+    # compound ingredient identities such as "salt and pepper" have already
+    # been handled by the ingredient vocabulary.
+    text = re.sub(
+        r"\s+and\s+(?:the|a|an)\s+.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
 
-            if not ingredient_words:
-                continue
+    if not text:
+        return ""
 
-            width = len(ingredient_words)
+    # Standalone source/editorial words are never ingredient identities.
+    if text in {
+        "a",
+        "an",
+        "the",
+        "and",
+        "with",
+        "of",
+        "serve",
+        "serves",
+        "serving",
+        "served",
+        "for",
+        "to",
+    }:
+        return ""
 
-            for start in range(
-                0,
-                len(source_words) - width + 1,
-            ):
-                window = source_words[start:start + width]
-
-                if window != ingredient_words:
-                    continue
-
-                identity = canonical_ingredient_identity(
-                    ingredient
-                )
-
-                if identity:
-                    if (
-                        not recovered_identity
-                        or len(identity.split())
-                        > len(recovered_identity.split())
-                        or (
-                            len(identity.split())
-                            == len(recovered_identity.split())
-                            and len(identity) > len(recovered_identity)
-                        )
-                    ):
-                        recovered_identity = identity
-
-        if recovered_identity:
-            return recovered_identity
+    candidate = re.sub(r"\s+", " ", text).strip()
 
     # Let the existing alias layer recognize compound/product identities
     # such as red pepper flakes, flavored oils, and similar established
@@ -6309,6 +6318,25 @@ def extract_ingredient_identity(text):
 
         if singular_candidate and singular_candidate != final_identity:
             final_identity = canonical_ingredient_identity(singular_candidate)
+
+    # Final universal source/editorial boundary.
+    # Enforce this immediately before returning the canonical identity so
+    # trailing directional/source wording can never become part of the
+    # ingredient identity.
+    #
+    # Examples:
+    #   "water out the sauce" -> "water"
+    #   "garlic from the pan" -> "garlic"
+    #   "onion into the skillet" -> "onion"
+    #   "ginger with the vegetables" -> "ginger"
+    #
+    # Legitimate identities such as "crispy chili oil" remain unchanged.
+    final_identity = re.sub(
+        r"\s+(?:out|from|into|onto|on|in|with)\b.*$",
+        "",
+        final_identity,
+        flags=re.IGNORECASE,
+    ).strip()
 
     return final_identity
 
