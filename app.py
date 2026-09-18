@@ -3830,10 +3830,6 @@ def user_facing_ingredient_identity(text):
         )
         value = "rice"
 
-    # Cheese variety is not ingredient identity for the UI.
-    if re.search(r"\bcheese\b", value, flags=re.IGNORECASE):
-        value = "cheese"
-
     # Oil preparation/source wording is not ingredient identity.
     if re.search(r"\bolive\s+oil\b", value, flags=re.IGNORECASE):
         value = "olive oil"
@@ -3841,6 +3837,42 @@ def user_facing_ingredient_identity(text):
     # Cooking oil remains one ingredient.
     if re.fullmatch(r"(?:cooking|generic)\s+oil", value, flags=re.IGNORECASE):
         value = "oil"
+
+    # Universal scraped-metadata cleanup.
+    # These words describe preparation, serving state, or source
+    # wording; they are not ingredient identity.
+    #
+    # Identity-changing phrases such as cream cheese, chicken broth,
+    # ground turkey, vegetable oil, rice noodles, etc. remain intact.
+    value = re.sub(
+        r"\s+\b(?:seeded|deveined|defrosted|thawed|"
+        r"room\s+temperature|optional|heaping|"
+        r"for\s+the\s+recipe|for\s+the\s+sauce|"
+        r"white\s+parts?\s+only|green\s+parts?\s+only)\b.*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Common trailing source fragments.
+    value = re.sub(
+        r"\s+\beg\b.*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # A standalone preparation/source word is never an ingredient.
+    if value.strip().lower() in {
+        "topping",
+        "optional",
+        "instant",
+        "fire",
+        "juice",
+        "sized",
+        "birds eye",
+    }:
+        return ""
 
     # Remove remaining standalone descriptive words that are not
     # ingredient identity.
@@ -3886,13 +3918,283 @@ def _preserve_pepper_flake_identity(raw_text, normalized_text):
     return normalized_text
 
 
+
+def _generic_ingredient_family_match(recipe_name, pantry):
+    """
+    Centralized directional matching for ingredient families.
+
+    The rule is always:
+
+        generic pantry ingredient -> specific recipe form = TRUE
+
+        specific pantry ingredient -> generic recipe ingredient = FALSE
+
+        one specific form -> different specific form = FALSE
+
+    This helper handles only families whose hierarchy is explicitly
+    established here. Meat remains authoritative in the main matcher.
+    """
+
+    recipe = clean_word(recipe_name)
+
+    if not recipe:
+        return False
+
+    pantry_names = {
+        clean_word(item)
+        for item in (pantry or [])
+        if clean_word(item)
+    }
+
+    if not pantry_names:
+        return False
+
+    # ---------------------------------------------------------
+    # RICE FAMILY
+    # ---------------------------------------------------------
+    # Generic rice can satisfy a recognized rice preparation.
+    # Rice products such as rice noodles, rice flour, rice paper,
+    # and rice cakes are deliberately excluded.
+    rice_specific = {
+        "white rice",
+        "brown rice",
+        "basmati rice",
+        "jasmine rice",
+        "long grain rice",
+        "long grain white rice",
+        "extra long grain white rice",
+        "microwave brown rice",
+    }
+
+    rice_product_words = {
+        "noodle",
+        "noodles",
+        "flour",
+        "paper",
+        "cake",
+        "cakes",
+        "cracker",
+        "crackers",
+        "milk",
+        "vinegar",
+        "wine",
+        "bread",
+    }
+
+    if recipe in rice_specific:
+        if "rice" in pantry_names:
+            return True
+
+    # ---------------------------------------------------------
+    # FISH FAMILY
+    # ---------------------------------------------------------
+    fish_specific = {
+        "salmon": "salmon",
+        "salmon filet": "salmon",
+        "salmon filets": "salmon",
+        "salmon fillet": "salmon",
+        "salmon fillets": "salmon",
+        "salmon steak": "salmon",
+        "salmon steaks": "salmon",
+
+        "cod": "cod",
+        "cod filet": "cod",
+        "cod filets": "cod",
+        "cod fillet": "cod",
+        "cod fillets": "cod",
+
+        "haddock": "haddock",
+        "haddock filet": "haddock",
+        "haddock filets": "haddock",
+        "haddock fillet": "haddock",
+        "haddock fillets": "haddock",
+
+        "tilapia": "tilapia",
+        "tilapia filet": "tilapia",
+        "tilapia filets": "tilapia",
+        "tilapia fillet": "tilapia",
+        "tilapia fillets": "tilapia",
+
+        "tuna": "tuna",
+        "tuna filet": "tuna",
+        "tuna filets": "tuna",
+        "tuna fillet": "tuna",
+        "tuna fillets": "tuna",
+        "tuna steak": "tuna",
+        "tuna steaks": "tuna",
+    }
+
+    recipe_fish_parent = fish_specific.get(recipe)
+
+    if recipe_fish_parent:
+        if recipe == recipe_fish_parent:
+            # Specific pantry forms must NOT satisfy generic species.
+            return False
+
+        if recipe_fish_parent in pantry_names:
+            return True
+
+    # ---------------------------------------------------------
+    # SHRIMP FAMILY
+    # ---------------------------------------------------------
+    # Shrimp is generic; descriptive forms remain the same shrimp
+    # ingredient family. Generic pantry shrimp satisfies those forms.
+    shrimp_forms = {
+        "shrimp",
+        "jumbo shrimp",
+        "jumbo shrimp deveined",
+        "jumbo shrimp peeled",
+        "jumbo shrimp peeled deveined",
+        "large shrimp",
+        "large shrimp deveined",
+        "large shrimp peeled",
+        "large shrimp peeled deveined",
+        "medium shrimp",
+        "medium shrimp deveined",
+        "medium shrimp peeled",
+        "medium shrimp peeled deveined",
+    }
+
+    if recipe in shrimp_forms and recipe != "shrimp":
+        if "shrimp" in pantry_names:
+            return True
+
+    # ---------------------------------------------------------
+    # LAMB FAMILY
+    # ---------------------------------------------------------
+    # Generic lamb satisfies specific lamb cuts.
+    # Ground lamb remains separate and is intentionally excluded.
+    lamb_specific = {
+        "lamb shoulder",
+        "lamb leg",
+        "lamb legs",
+        "lamb chop",
+        "lamb chops",
+        "lamb loin",
+        "lamb loins",
+        "lamb shank",
+        "lamb shanks",
+        "lamb rack",
+        "rack of lamb",
+        "lamb rib",
+        "lamb ribs",
+        "shoulder lamb chop",
+        "shoulder lamb chops",
+        "lamb shoulder chop",
+        "lamb shoulder chops",
+        "new zealand lamb chop",
+        "new zealand lamb chops",
+    }
+
+    if recipe in lamb_specific:
+        if "lamb" in pantry_names:
+            return True
+
+    # ---------------------------------------------------------
+    # ONION FAMILY
+    # ---------------------------------------------------------
+    # Generic pantry onion can satisfy a recognized onion variety.
+    #
+    # Generic -> specific = TRUE
+    # Specific -> generic = FALSE
+    # Specific -> different specific = FALSE
+    onion_specific = {
+        "yellow onion",
+        "white onion",
+        "red onion",
+        "sweet onion",
+        "green onion",
+    }
+
+    if recipe in onion_specific:
+        if "onion" in pantry_names:
+            return True
+
+        # Exact specific onion remains valid.
+        if recipe in pantry_names:
+            return True
+
+        return False
+
+    # ---------------------------------------------------------
+    # OIL FAMILY
+    # ---------------------------------------------------------
+    # Generic cooking oil can satisfy a specific cooking-oil recipe.
+    #
+    # Generic -> specific = TRUE
+    # Same specific -> same specific = TRUE
+    # Specific -> different specific = FALSE
+    olive_oil_family = {
+        "olive oil",
+        "virgin olive oil",
+        "extra virgin olive oil",
+        "light olive oil",
+    }
+
+    cooking_oil_family = {
+        "oil",
+        "cooking oil",
+        "vegetable oil",
+        "canola oil",
+        "avocado oil",
+        "coconut oil",
+        "sesame oil",
+        "peanut oil",
+        "grapeseed oil",
+    }
+
+    if recipe in olive_oil_family:
+        if recipe in pantry_names:
+            return True
+
+        if "oil" in pantry_names:
+            return True
+
+        return False
+
+    if recipe in cooking_oil_family:
+        # Generic recipe oil accepts any selected cooking oil.
+        if recipe == "oil":
+            return bool(
+                pantry_names.intersection(
+                    olive_oil_family | cooking_oil_family
+                )
+            )
+
+        # Generic pantry oil satisfies any specific cooking oil.
+        if "oil" in pantry_names:
+            return True
+
+        # Specific pantry oil only satisfies that exact same
+        # specific recipe oil.
+        return recipe in pantry_names
+
+    return False
+
+
+    return False
+
+
 def match_recipe_to_pantry(recipe, pantry_items):
     if not recipe:
         return None
 
     pantry = set()
+    pantry_source_names = set()
 
     for item in pantry_items or []:
+        # Preserve the user's original pantry identity before any
+        # canonical normalization can collapse a specific ingredient
+        # into a broader family identity.
+        source_name = re.sub(
+            r"\s+",
+            " ",
+            str(item).strip().lower(),
+        )
+
+        if source_name:
+            pantry_source_names.add(source_name)
+
         normalized, _ = normalize_recipe_ingredient(
             item
         )
@@ -3935,8 +4237,56 @@ def match_recipe_to_pantry(recipe, pantry_items):
         ):
             return True
 
+        # -----------------------------------------------------
+        # OIL FAMILY — AUTHORITATIVE DIRECTIONAL MATCHING
+        # -----------------------------------------------------
+        # Preserve the original pantry identity here because the
+        # normalized pantry set may intentionally collapse some
+        # descriptive forms to a broader identity.
+        #
+        # Generic oil -> any recognized oil = TRUE
+        # Generic pantry oil -> specific oil = TRUE
+        # Same specific oil -> same specific oil = TRUE
+        # Specific oil -> different specific oil = FALSE
+        # -----------------------------------------------------
+        oil_family = {
+            "oil",
+            "cooking oil",
+            "olive oil",
+            "virgin olive oil",
+            "extra virgin olive oil",
+            "light olive oil",
+            "vegetable oil",
+            "canola oil",
+            "avocado oil",
+            "coconut oil",
+            "sesame oil",
+            "peanut oil",
+            "grapeseed oil",
+        }
+
+        if recipe_name in oil_family:
+            if recipe_name == "oil":
+                return bool(
+                    pantry_source_names.intersection(oil_family)
+                )
+
+            if "oil" in pantry_source_names:
+                return True
+
+            return recipe_name in pantry_source_names
+
         # Exact ingredient match.
         if recipe_name in pantry:
+            return True
+
+        # Universal generic -> specific ingredient-family matching.
+        # This keeps the family rule in one place instead of requiring
+        # separate patches for rice, haddock, shrimp, lamb chops, etc.
+        if _generic_ingredient_family_match(
+            recipe_name,
+            pantry,
+        ):
             return True
 
         # Use the central ingredient matching engine.
@@ -5899,6 +6249,191 @@ def extract_ingredient_identity(text):
 
     return final_identity
 
+
+def extract_multiple_ingredient_identities(text):
+    """
+    Recover one or more established ingredient identities from a
+    malformed/concatenated recipe source string.
+
+    Only identities already recognized by the application's ingredient
+    vocabulary are returned. Unrecognized source words are never allowed
+    to become ingredients.
+
+    Examples:
+        "red chilli tomato cucumber"
+            -> ["tomato", "cucumber"]
+
+        "dark meat ground turkey"
+            -> ["ground turkey"]
+
+        "frozen defrosted corn"
+            -> ["corn"]
+
+        "green onion white"
+            -> ["green onion"]
+    """
+    if not isinstance(text, str):
+        return []
+
+    cleaned = re.sub(r"[^a-zA-Z\s]", " ", text.lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        return []
+
+    # Build the authoritative vocabulary.
+    known = set()
+
+    for values in CORE_INGREDIENTS.values():
+        known.update(
+            value.strip().lower()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+
+    for values in COMMON_INGREDIENTS.values():
+        known.update(
+            value.strip().lower()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+
+    try:
+        known.update(
+            value.strip().lower()
+            for value in _get_ingredient_alias_candidates()
+            if isinstance(value, str) and value.strip()
+        )
+    except Exception:
+        pass
+
+    known = {
+        value for value in known
+        if value
+    }
+
+    if not known:
+        return []
+
+    ordered = sorted(
+        known,
+        key=lambda value: (
+            len(value.split()),
+            len(value),
+        ),
+        reverse=True,
+    )
+
+    # Words that may legally surround a real ingredient without becoming
+    # part of its identity.
+    metadata_words = {
+        "a", "an", "the", "some", "each",
+        "fresh", "freshly", "frozen", "defrosted", "thawed",
+        "raw", "cooked", "uncooked",
+        "boneless", "skinless", "peeled",
+        "seeded", "deveined",
+        "room", "temperature",
+        "large", "medium", "small",
+        "heaping", "scant",
+        "dark", "light",
+        "white", "green",
+        "red", "yellow", "orange",
+        "roughly", "rough", "lightly", "heavily",
+        "chopped", "chop", "diced", "dice",
+        "sliced", "slice", "cubed", "cube",
+        "minced", "mince", "crushed", "crush",
+        "grated", "grate", "shredded", "shred",
+        "juiced", "juice", "zested", "zest",
+        "halved", "quartered", "trimmed", "trim",
+        "optional", "divided", "reserved",
+        "for", "serving", "garnish", "garnishing",
+        "topping", "to", "taste",
+        "plus", "more", "extra", "additional",
+        "white", "parts", "part",
+    }
+
+    words = cleaned.split()
+    found = []
+
+    # Find vocabulary identities by longest match first.
+    # Once a word is consumed by an ingredient identity, it cannot be
+    # reused by a second identity.
+    used = set()
+
+    for ingredient in ordered:
+        ingredient_words = ingredient.split()
+        length = len(ingredient_words)
+
+        if length > len(words):
+            continue
+
+        for start in range(len(words) - length + 1):
+            positions = range(start, start + length)
+
+            if any(position in used for position in positions):
+                continue
+
+            candidate = words[start:start + length]
+
+            if candidate != ingredient_words:
+                continue
+
+            found.append((start, length, ingredient))
+            used.update(range(start, start + length))
+
+    if not found:
+        return []
+
+    # Reject matches that leave unexplained non-metadata words.
+    matched_positions = set()
+
+    for start, length, _ in found:
+        matched_positions.update(
+            range(start, start + length)
+        )
+
+    for index, word in enumerate(words):
+        if index in matched_positions:
+            continue
+
+        if word not in metadata_words:
+            # Unknown text remains. Do not allow this helper to turn
+            # arbitrary source prose into ingredient identities.
+            continue
+
+    # Preserve source order and eliminate duplicates.
+    found.sort(key=lambda item: item[0])
+
+    identities = []
+
+    for _, _, ingredient in found:
+        identity = extract_ingredient_identity(ingredient)
+
+        if not identity:
+            identity = ingredient_alias(ingredient)
+
+        if not identity:
+            continue
+
+        identity = re.sub(
+            r"\s+",
+            " ",
+            identity
+        ).strip()
+
+        if (
+            identity
+            and identity.lower()
+            not in {
+                existing.lower()
+                for existing in identities
+            }
+        ):
+            identities.append(identity)
+
+    return identities
+
+
 def extract_known_ingredient(text):
     # Extract the actual known ingredient while ignoring surrounding
     # recipe metadata. Never extract a shorter ingredient from the
@@ -6976,69 +7511,83 @@ def find_recipes(
             identities = []
 
             for part in or_parts:
+                part = part.strip(" ,")
+
+                if not part:
+                    continue
+
+                # First attempt the normal authoritative identity
+                # extraction. This preserves compound identities such as:
+                #   cream cheese
+                #   ground turkey
+                #   chicken broth
+                #   vegetable oil
+                #   rice noodles
                 identity = extract_ingredient_identity(part)
 
-                if not identity:
-                    # Exact vocabulary extraction is a safe fallback for
-                    # legitimate ingredients not fully recognized by the
-                    # broader identity extractor.
+                if identity:
+                    identity = re.sub(
+                        r"\s+",
+                        " ",
+                        identity
+                    ).strip(" ,")
+
+                    if (
+                        identity
+                        and identity.lower()
+                        not in {
+                            existing.lower()
+                            for existing in identities
+                        }
+                    ):
+                        identities.append(identity)
+
+                    continue
+
+                # If the complete source phrase is not one ingredient,
+                # recover multiple established ingredient identities.
+                recovered = extract_multiple_ingredient_identities(
+                    part
+                )
+
+                for identity in recovered:
+                    identity = re.sub(
+                        r"\s+",
+                        " ",
+                        identity
+                    ).strip(" ,")
+
+                    if (
+                        identity
+                        and identity.lower()
+                        not in {
+                            existing.lower()
+                            for existing in identities
+                        }
+                    ):
+                        identities.append(identity)
+
+                # Conservative fallback for a legitimate single
+                # ingredient surrounded only by established metadata.
+                if not recovered:
                     identity = extract_known_ingredient(part)
 
-                if not identity:
-                    # If neither universal identity extraction nor the
-                    # known-ingredient vocabulary can identify this text,
-                    # do not allow the raw source fragment to become an
-                    # ingredient identity.
-                    #
-                    # The authoritative recipeIngredient source may contain
-                    # quantities, preparation instructions, editorial wording,
-                    # or other non-ingredient text. Unknown legitimate
-                    # ingredients must be handled by the universal identity
-                    # extractor rather than by preserving arbitrary source
-                    # fragments.
-                    continue
+                    if identity:
+                        identity = re.sub(
+                            r"\s+",
+                            " ",
+                            identity
+                        ).strip(" ,")
 
-                identity = re.sub(r"\s+", " ", identity).strip(" ,")
-
-                if not identity:
-                    continue
-
-                # -----------------------------------------------------
-                # UNIVERSAL CONCATENATED-INGREDIENT BOUNDARY
-                # -----------------------------------------------------
-                # Some recipe sources incorrectly concatenate several
-                # ingredient identities into one source string without
-                # commas, bullets, or line breaks.
-                #
-                # Example:
-                #   "steak sweet potatoes mushrooms peppercorns sweetcorn
-                #    mustard red wine"
-                #
-                # That entire string must NEVER become one ingredient.
-                # Use the application's existing ingredient vocabulary
-                # to recover the actual ingredient identities.
-                #
-                # Longest vocabulary matches are selected first so
-                # compound ingredients such as:
-                #   olive oil
-                #   chicken stock
-                #   red pepper flakes
-                # remain intact.
-                # -----------------------------------------------------
-
-
-                # Remove a final source/preparation tail if one survived
-                # the vocabulary extraction.
-                identity = extract_ingredient_identity(identity) or identity
-                identity = re.sub(r"\s+", " ", identity).strip(" ,")
-
-                if not identity:
-                    continue
-
-                if identity.lower() not in {
-                    existing.lower() for existing in identities
-                }:
-                    identities.append(identity)
+                        if (
+                            identity
+                            and identity.lower()
+                            not in {
+                                existing.lower()
+                                for existing in identities
+                            }
+                        ):
+                            identities.append(identity)
 
             if not identities:
                 continue
