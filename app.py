@@ -6179,6 +6179,60 @@ def extract_ingredient_identity(text):
             if identity:
                 return identity
 
+    # Recover an established ingredient from surrounding scraped/source
+    # words when the complete phrase is not itself an ingredient identity.
+    #
+    # This is deliberately vocabulary-driven rather than a growing list
+    # of individual bad words. It handles source contamination such as:
+    #   "sized garlic" -> "garlic"
+    #   "sized onion" -> "onion"
+    #   "tomatoes seeded" -> "tomato"
+    #   "and ginger" -> "ginger"
+    #   "water out the sauce" -> "water"
+    #
+    # The longest established identity wins, so legitimate compound
+    # ingredients such as "crispy chili oil" remain intact.
+    source_words = re.findall(r"[a-z]+", candidate)
+    recovered_identity = ""
+
+    if len(source_words) > 1:
+        for ingredient in known_ordered:
+            ingredient_words = ingredient.split()
+
+            if not ingredient_words:
+                continue
+
+            width = len(ingredient_words)
+
+            for start in range(
+                0,
+                len(source_words) - width + 1,
+            ):
+                window = source_words[start:start + width]
+
+                if window != ingredient_words:
+                    continue
+
+                identity = canonical_ingredient_identity(
+                    ingredient
+                )
+
+                if identity:
+                    if (
+                        not recovered_identity
+                        or len(identity.split())
+                        > len(recovered_identity.split())
+                        or (
+                            len(identity.split())
+                            == len(recovered_identity.split())
+                            and len(identity) > len(recovered_identity)
+                        )
+                    ):
+                        recovered_identity = identity
+
+        if recovered_identity:
+            return recovered_identity
+
     # Let the existing alias layer recognize compound/product identities
     # such as red pepper flakes, flavored oils, and similar established
     # ingredient forms.
@@ -6193,11 +6247,20 @@ def extract_ingredient_identity(text):
             if identity:
                 return identity
 
-    # Conservative fallback: canonicalize only the already-isolated
-    # grammatically singular ingredient phrase. Established vocabulary
-    # identities were checked first, so plural identities such as
-    # "red pepper flakes" are preserved above.
-    final_identity = canonical_ingredient_identity(singular_candidate)
+    # Do not promote arbitrary leftover source text into an ingredient.
+    # At this point, a valid identity must already have been established
+    # by the application's ingredient vocabulary or alias layer above.
+    #
+    # This is the universal identity boundary: quantities, metadata,
+    # preparation instructions, serving directions, and scraped prose
+    # that do not resolve to a known ingredient must be rejected rather
+    # than being passed through canonical_ingredient_identity().
+    final_identity = ""
+
+    if singular_candidate in known:
+        final_identity = canonical_ingredient_identity(
+            singular_candidate
+        )
 
     if not final_identity:
         return ""
