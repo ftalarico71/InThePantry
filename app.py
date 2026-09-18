@@ -6069,6 +6069,28 @@ def extract_ingredient_identity(text):
     # First isolate the candidate phrase.
     candidate = re.sub(r"\s+", " ", text).strip()
 
+    # Establish the source/editorial boundary BEFORE vocabulary and alias
+    # matching. This is critical because those layers can return an identity
+    # immediately; the boundary must therefore run before them.
+    #
+    # Examples:
+    #   "water out the sauce" -> "water"
+    #   "garlic from the pan" -> "garlic"
+    #   "onion into the skillet" -> "onion"
+    #   "ginger with the vegetables" -> "ginger"
+    #
+    # Legitimate identities such as "crispy chili oil" are unchanged.
+    text = re.sub(
+        r"\s+(?:out|from|into|onto|on|in|with)\b"
+        r"(?:\s+(?:the|a|an))?"
+        r"(?:\s+\w+){0,8}\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    candidate = re.sub(r"\s+", " ", text).strip()
+
     # Generic grammatical singularization is deliberately applied only
     # after exact vocabulary recognition. Established plural ingredient
     # identities are preserved unless their singular form is itself a
@@ -6187,23 +6209,6 @@ def extract_ingredient_identity(text):
     # artifacts, not ingredient identities.
     text = re.sub(
         r"^\s*(?:a|an|the|and|with|of)\s+",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).strip()
-
-    # Remove trailing source/editorial direction phrases. These phrases
-    # describe where/how the ingredient is used, not the ingredient itself.
-    #
-    # Examples:
-    #   "water out the sauce" -> "water"
-    #   "garlic from the pan" -> "garlic"
-    #   "onion into the skillet" -> "onion"
-    #   "ginger with the vegetables" -> "ginger"
-    text = re.sub(
-        r"\s+(?:out|from|into|onto|on|in|with)\b"
-        r"(?:\s+(?:the|a|an))?"
-        r"(?:\s+\w+){0,8}\s*$",
         "",
         text,
         flags=re.IGNORECASE,
