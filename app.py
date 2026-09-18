@@ -6054,11 +6054,42 @@ def extract_ingredient_identity(text):
     except Exception:
         pass
 
+    # Pantry staples are still legitimate ingredient identities at the
+    # extraction stage. They are filtered later by the universal
+    # pantry-staple requirement logic.
+    #
+    # This separation is important:
+    #   "water out the sauce" -> "water"        (identity)
+    #   water -> not a required ingredient      (staple filtering)
+    #
+    # Do not make the identity extractor responsible for requirement
+    # filtering.
+    known.update(
+        staple.lower()
+        for staple in PANTRY_STAPLES
+        if isinstance(staple, str) and staple.strip()
+    )
+
     known = {
         item
         for item in known
         if item
     }
+
+    # Build canonical identities from the established vocabulary.
+    # This lets source variants such as "fresh ginger" resolve to
+    # the established identity "ginger" without promoting arbitrary
+    # scraped words into ingredients.
+    known_identities = set(known)
+
+    for ingredient in tuple(known):
+        try:
+            identity = canonical_ingredient_identity(ingredient)
+        except Exception:
+            identity = ""
+
+        if identity:
+            known_identities.add(identity)
 
     known_ordered = sorted(
         known,
@@ -6090,6 +6121,51 @@ def extract_ingredient_identity(text):
     ).strip()
 
     candidate = re.sub(r"\s+", " ", text).strip()
+
+    # -------------------------------------------------------------
+    # UNIVERSAL SOURCE-IDENTITY BOUNDARY
+    # -------------------------------------------------------------
+    # Recipe scrapers frequently attach non-ingredient words to an
+    # otherwise valid ingredient identity. These words describe the
+    # container, presentation, product form, or preparation rather
+    # than changing what ingredient the recipe actually requires.
+    #
+    # Examples:
+    #   heaping broccoli florets       -> broccoli
+    #   container shiitake mushrooms  -> shiitake mushroom
+    #   vegetable oil spray           -> vegetable oil
+    #   gingerroot                    -> ginger
+    #
+    # This is intentionally vocabulary-driven. We only reduce a
+    # phrase when the resulting identity is already an established
+    # ingredient; arbitrary source text is never promoted.
+    # -------------------------------------------------------------
+
+    candidate = re.sub(
+        r"^\s*(?:container|containers|package|packages|"
+        r"packet|packets|bag|bags|jar|jars|can|cans|"
+        r"bottle|bottles)\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    candidate = re.sub(
+        r"\s+\b(?:florets?|spray|sprayed)\b(?:\s+|$)",
+        " ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+
+    # Joined botanical/product forms commonly scraped as one word.
+    # These describe the same established ingredient identity.
+    joined_identity_aliases = {
+        "gingerroot": "ginger",
+    }
+
+    if candidate in joined_identity_aliases:
+        candidate = joined_identity_aliases[candidate]
 
     # Generic grammatical singularization is deliberately applied only
     # after exact vocabulary recognition. Established plural ingredient
@@ -6163,6 +6239,9 @@ def extract_ingredient_identity(text):
                 singular_candidate,
                 flags=re.IGNORECASE,
             ):
+                if ingredient in PANTRY_STAPLES:
+                    return ingredient
+
                 identity = canonical_ingredient_identity(ingredient)
                 if identity:
                     return identity
@@ -6200,6 +6279,9 @@ def extract_ingredient_identity(text):
             candidate,
             flags=re.IGNORECASE,
         ):
+            if ingredient in PANTRY_STAPLES:
+                return ingredient
+
             identity = canonical_ingredient_identity(ingredient)
             if identity:
                 return identity
@@ -6247,6 +6329,109 @@ def extract_ingredient_identity(text):
 
     candidate = re.sub(r"\s+", " ", text).strip()
 
+    # -------------------------------------------------------------
+    # UNIVERSAL FINAL SOURCE-IDENTITY CLEANUP
+    # -------------------------------------------------------------
+    # Recipe scrapers can leave grammatical/source words attached to
+    # an otherwise valid ingredient. Remove those structural wrappers
+    # before the alias layer gets the candidate.
+    #
+    # Examples:
+    #   "and ginger"                  -> "ginger"
+    #   "container shiitake mushrooms" -> "shiitake mushrooms"
+    #
+    # This is intentionally structural rather than ingredient-specific.
+    # -------------------------------------------------------------
+
+    candidate = re.sub(
+        r"^\s*(?:and|with|of|the)\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    singular_candidate = re.sub(
+        r"^\s*(?:and|with|of|the)\s+",
+        "",
+        singular_candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    candidate = re.sub(
+        r"^\s*(?:container|containers|package|packages|"
+        r"packet|packets|bag|bags|jar|jars|can|cans|"
+        r"bottle|bottles)\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Rebuild grammatical singularization after source/editorial
+    # cleanup so a cleaned plural such as "shiitake mushrooms" is
+    # evaluated as "shiitake mushroom".
+    singular_words = [
+        singularize_word(word)
+        for word in candidate.split()
+    ]
+    singular_candidate = " ".join(singular_words).strip()
+
+    # Joined botanical/product wording such as "gingerroot" is treated
+    # as the established ingredient only when removing "root" produces
+    # a known ingredient identity. This prevents arbitrary words from
+    # being converted into ingredients.
+    for value_name in ("candidate", "singular_candidate"):
+        value = locals()[value_name]
+
+        if value.endswith("root") and len(value) > 4:
+            possible_identity = value[:-4].strip()
+
+            if possible_identity in known_identities:
+                if value_name == "candidate":
+                    candidate = possible_identity
+                else:
+                    singular_candidate = possible_identity
+
+    # -------------------------------------------------------------
+    # AUTHORITATIVE POST-CLEANUP IDENTITY RESOLUTION
+    # -------------------------------------------------------------
+    #
+    # Source/editorial cleanup above can transform a scraped phrase
+    # into a valid ingredient identity. Resolve that cleaned identity
+    # against the canonical vocabulary BEFORE the alias layer.
+    #
+    # This is intentionally universal:
+    #
+    #   fresh ginger, if desired     -> ginger
+    #   and ginger                   -> ginger
+    #   gingerroot                   -> ginger
+    #   shiitake mushrooms           -> shiitake mushroom
+    #
+    # The extractor must identify the ingredient only after the source
+    # boundary has been applied. This prevents valid identities from
+    # being lost simply because the original source wording contained
+    # editorial or grammatical material.
+    # -------------------------------------------------------------
+
+    for current in (candidate, singular_candidate):
+        if not current:
+            continue
+
+        normalized_current = re.sub(
+            r"\\s+",
+            " ",
+            current,
+        ).strip()
+
+        if not normalized_current:
+            continue
+
+        if normalized_current in known_identities:
+            identity = canonical_ingredient_identity(
+                normalized_current
+            )
+            if identity:
+                return identity
+
     # Let the existing alias layer recognize compound/product identities
     # such as red pepper flakes, flavored oils, and similar established
     # ingredient forms.
@@ -6256,10 +6441,27 @@ def extract_ingredient_identity(text):
 
         aliased = ingredient_alias(current)
 
-        if aliased:
-            identity = canonical_ingredient_identity(aliased)
-            if identity:
-                return identity
+        if not aliased:
+            continue
+
+        identity = canonical_ingredient_identity(aliased)
+
+        if not identity:
+            continue
+
+        # Universal identity boundary:
+        #
+        # 1. Established ingredient identities are always accepted.
+        # 2. Multi-word source identities are preserved when they
+        #    survive canonicalization. This is important for legitimate
+        #    products/ingredients such as "crispy chili oil" and
+        #    "red pepper flakes".
+        # 3. Unknown standalone words are not promoted into ingredients.
+        #
+        # This prevents editorial leftovers such as "fire" and
+        # "topping" without maintaining an ingredient-specific blocklist.
+        if identity in known_identities or len(identity.split()) > 1:
+            return identity
 
     # Do not promote arbitrary leftover source text into an ingredient.
     # At this point, a valid identity must already have been established
