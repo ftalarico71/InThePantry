@@ -1476,6 +1476,42 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     ]
     original_recipe_name = clean_word(recipe_ingredient)
 
+    # -------------------------------------------------------------
+    # AUTHORITATIVE SEASONING-PEPPER DIRECTION
+    # -------------------------------------------------------------
+    # This must run before alias/canonical normalization because
+    # specific seasoning pepper identities can otherwise be collapsed
+    # into the generic pantry-staple identity "pepper".
+    #
+    # Generic pantry pepper -> specific recipe pepper = TRUE
+    # Specific pantry pepper -> generic recipe pepper = FALSE
+    # Same specific pepper -> same specific pepper = TRUE
+    # Different specific pepper variants = FALSE
+    #
+    # Pepper flakes are intentionally NOT included here. They are a
+    # separate ingredient family and are handled independently.
+    seasoning_pepper_variants = {
+        "pepper",
+        "black pepper",
+        "white pepper",
+    }
+
+    if original_recipe_name in seasoning_pepper_variants:
+        if original_recipe_name == "pepper":
+            # Generic recipe pepper cannot be satisfied by a specific
+            # pantry pepper product.
+            return False
+
+        for original_user_name in original_user_names:
+            if original_user_name == original_recipe_name:
+                return True
+
+            if original_user_name == "pepper":
+                return True
+
+        # A different specific pepper variant does not substitute.
+        return False
+
     recipe_name = clean_word(recipe_ingredient)
     if not recipe_name:
         return False
@@ -1483,6 +1519,50 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     recipe_name = ingredient_alias(recipe_name)
     recipe_name = clean_word(recipe_name)
     if not recipe_name:
+        return False
+
+    # Pepper flakes are a distinct ingredient from pepper varieties.
+    # They must never satisfy red/green/black/etc. pepper, and
+    # pepper varieties must never satisfy pepper flakes.
+    def pepper_flake_identity(value):
+        if not isinstance(value, str):
+            return ""
+
+        identity = extract_ingredient_identity(value)
+
+        if not identity:
+            identity = clean_word(value)
+
+        identity = clean_word(identity)
+
+        if re.fullmatch(
+            r"(?:(?:crushed)\s+)?"
+            r"(?:(?:red|green|yellow|orange|black|white)\s+)?"
+            r"pepper\s+flakes?"
+            r"(?:\s+(?:crushed|ground|freshly\s+ground|"
+            r"coarsely\s+ground|finely\s+ground))?",
+            identity,
+            flags=re.IGNORECASE,
+        ):
+            return identity
+
+        return ""
+
+    recipe_pepper_flake = pepper_flake_identity(recipe_name)
+
+    pantry_pepper_flakes = {
+        identity
+        for identity in (
+            pepper_flake_identity(item)
+            for item in (user_ingredients or [])
+        )
+        if identity
+    }
+
+    if recipe_pepper_flake:
+        return recipe_pepper_flake in pantry_pepper_flakes
+
+    if pantry_pepper_flakes and "pepper" in recipe_name:
         return False
 
     # Preserve tomato-family direction before broad core matching.
@@ -1589,8 +1669,21 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     }
 
     if original_recipe_name in seasoning_pepper_variants:
-        return False
+        # Generic recipe "pepper" is not satisfied by a specific
+        # pantry pepper variant.
+        if original_recipe_name == "pepper":
+            return False
 
+        # A generic pantry "pepper" can satisfy a specific recipe
+        # seasoning-pepper variant, as can the exact same variant.
+        for user_raw in original_user_names:
+            if user_raw == original_recipe_name:
+                return True
+
+            if user_raw == "pepper":
+                return True
+
+        return False
 
     if original_recipe_name in pepper_variants:
         for user_raw in original_user_names:
@@ -1601,10 +1694,12 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
             if user_raw == original_recipe_name:
                 return True
 
-            # Generic pepper and a specific pepper variant are compatible.
+            # Generic recipe pepper is not satisfied by a specific
+            # pantry pepper variant.
             if original_recipe_name == "pepper":
-                return True
+                return False
 
+            # Generic pantry pepper satisfies a specific recipe variant.
             if user_raw == "pepper":
                 return True
 
@@ -1668,15 +1763,11 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
     # Preserve oil-family direction before broad core matching.
     #
-    # Olive-oil variants are one family:
-    #   olive oil = virgin olive oil = extra virgin olive oil = light olive oil
+    # Generic pantry oil -> specific recipe oil = TRUE
+    # Specific pantry oil -> generic recipe oil = FALSE
+    # Specific oil -> different specific oil = FALSE
     #
-    # Generic cooking oils are a separate family:
-    #   oil = cooking oil = vegetable oil = canola oil = avocado oil
-    #   = coconut oil = sesame oil = peanut oil = grapeseed oil
-    #
-    # Generic "oil" can satisfy any specific cooking-oil recipe, but
-    # olive oil remains distinct from non-olive cooking oils.
+    # Olive-oil variants remain interchangeable with one another.
     olive_oil_family = {
         "olive oil",
         "virgin olive oil",
@@ -1684,9 +1775,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         "light olive oil",
     }
 
-    cooking_oil_family = {
-        "oil",
-        "cooking oil",
+    specific_cooking_oils = {
         "vegetable oil",
         "canola oil",
         "avocado oil",
@@ -1696,32 +1785,46 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         "grapeseed oil",
     }
 
-    oil_family = olive_oil_family | cooking_oil_family
+    generic_oil_family = {
+        "oil",
+        "cooking oil",
+    }
+
+    oil_family = (
+        olive_oil_family
+        | specific_cooking_oils
+        | generic_oil_family
+    )
 
     if original_recipe_name in oil_family:
-        for x in (user_ingredients or []):
-            user_raw = clean_word(x)
+        pantry_oils = {
+            clean_word(x)
+            for x in (user_ingredients or [])
+            if clean_word(x)
+        }
 
-            if user_raw not in oil_family:
-                continue
-
-            # Olive-oil variants match every other olive-oil variant.
-            if (
-                original_recipe_name in olive_oil_family
-                and user_raw in olive_oil_family
-            ):
+        # Generic pantry "oil" satisfies a specific recipe oil.
+        if (
+            original_recipe_name in olive_oil_family
+            or original_recipe_name in specific_cooking_oils
+        ):
+            if "oil" in pantry_oils:
                 return True
 
-            # Generic cooking oil matches any member of the cooking-oil
-            # family, including a recipe that simply says "oil".
-            if (
-                original_recipe_name in cooking_oil_family
-                and user_raw in cooking_oil_family
-            ):
-                return True
+        # Generic recipe oil requires generic pantry oil.
+        if original_recipe_name in generic_oil_family:
+            return bool(
+                pantry_oils.intersection(generic_oil_family)
+            )
 
-            # Olive oil and non-olive cooking oils remain distinct.
-            return False
+        # Olive-oil variants satisfy one another.
+        if original_recipe_name in olive_oil_family:
+            return bool(
+                pantry_oils.intersection(olive_oil_family)
+            )
+
+        # A specific non-olive oil only matches itself.
+        return original_recipe_name in pantry_oils
 
     # -----------------------------------------------------
     # EARLY DESCRIPTIVE GROUND-MEAT PROTECTION
@@ -8307,7 +8410,7 @@ def find_recipes(
             "have",
             []
         ):
-            identity = canonical_ingredient_identity(
+            identity = user_facing_ingredient_identity(
                 item.get("ingredient", "")
             )
 
@@ -8322,7 +8425,7 @@ def find_recipes(
         missing = []
 
         for item in missing_items:
-            identity = canonical_ingredient_identity(
+            identity = user_facing_ingredient_identity(
                 item.get("ingredient", "")
             )
 
