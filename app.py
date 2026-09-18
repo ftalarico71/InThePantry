@@ -4495,12 +4495,16 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 # Pepper-flake products are real ingredients, not pantry
                 # staple seasoning pepper. Preserve them even though they
                 # contain the word "pepper".
+                pepper_flake_identity = extract_ingredient_identity(text)
+
                 is_pepper_flake = bool(
                     re.fullmatch(
                         r"(?:(?:crushed)\s+)?"
                         r"(?:(?:red|green|yellow|orange|black|white)\s+)?"
-                        r"pepper\s+flakes?",
-                        text,
+                        r"pepper\s+flakes?"
+                        r"(?:\s+(?:crushed|ground|freshly\s+ground|"
+                        r"coarsely\s+ground|finely\s+ground))?",
+                        pepper_flake_identity or "",
                         flags=re.IGNORECASE,
                     )
                 )
