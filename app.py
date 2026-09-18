@@ -1176,6 +1176,12 @@ def _get_ingredient_alias_candidates():
 # INGREDIENT ALIASES
 # ---------------------------------------------------------
 
+# Canonical identities produced by the established alias layer.
+# These are authoritative ingredient identities even when the raw
+# source phrase is not itself present in the vocabulary.
+_INGREDIENT_ALIAS_TARGETS = set()
+
+
 def ingredient_alias(text):
     if not isinstance(text, str):
         return ""
@@ -1350,6 +1356,15 @@ def ingredient_alias(text):
         "soya sauce": "soy sauce",
         "soy": "soy sauce",
     }
+
+    # Only explicit alias targets are authoritative identities.
+    # Never register arbitrary input passed through this function.
+    for alias_target in aliases.values():
+        canonical_target = canonical_ingredient_identity(
+            alias_target
+        )
+        if canonical_target:
+            _INGREDIENT_ALIAS_TARGETS.add(canonical_target)
 
     result = canonical_ingredient_identity(
         aliases.get(text, text)
@@ -6082,6 +6097,17 @@ def extract_ingredient_identity(text):
     # scraped words into ingredients.
     known_identities = set(known)
 
+    # Explicit alias targets are authoritative ingredient identities.
+    # Add only targets declared by the alias table. Never add
+    # arbitrary input text passed through ingredient_alias().
+    for alias_target in _INGREDIENT_ALIAS_TARGETS:
+        if alias_target:
+            canonical_target = canonical_ingredient_identity(
+                alias_target
+            )
+            if canonical_target:
+                known_identities.add(canonical_target)
+
     for ingredient in tuple(known):
         try:
             identity = canonical_ingredient_identity(ingredient)
@@ -6412,7 +6438,21 @@ def extract_ingredient_identity(text):
     # No ingredient-specific exception is required.
     # -------------------------------------------------------------
 
-    for current in (singular_candidate, candidate):
+    # -------------------------------------------------------------
+    # AUTHORITATIVE IDENTITY RESOLUTION
+    # -------------------------------------------------------------
+    # Always preserve an established identity from the original
+    # cleaned candidate before considering grammatical singularization.
+    #
+    # This is critical for legitimate plural ingredient identities:
+    #
+    #   red pepper flakes -> red pepper flakes
+    #
+    # A singular candidate is only a fallback when the original
+    # candidate cannot establish an ingredient identity of its own.
+    # -------------------------------------------------------------
+
+    for current in (candidate, singular_candidate):
         if not current:
             continue
 
@@ -6426,39 +6466,29 @@ def extract_ingredient_identity(text):
         if not identity:
             continue
 
-        # If the cleaned candidate is already singular, accept a
-        # canonical identity returned by the established alias layer.
-        if current == singular_candidate:
-            if identity in known_identities or len(identity.split()) > 1:
+        # The original cleaned candidate has priority. If it resolves
+        # to an established identity, preserve it exactly rather than
+        # replacing it with a grammatical derivative.
+        if current == candidate:
+            if (
+                identity in known_identities
+                or identity in _INGREDIENT_ALIAS_TARGETS
+                or len(identity.split()) > 1
+            ):
                 return identity
 
-        # For a plural candidate, prefer the singularized form whenever
-        # its alias/canonical identity resolves differently.
-        if current == candidate and singular_candidate != candidate:
-            singular_aliased = ingredient_alias(singular_candidate)
+            continue
 
-            if singular_aliased:
-                singular_identity = canonical_ingredient_identity(
-                    singular_aliased
-                )
-
-                if singular_identity:
-                    if (
-                        singular_identity != identity
-                        or singular_identity in known_identities
-                        or len(singular_identity.split()) > 1
-                    ):
-                        return singular_identity
-
-        # Established single-word identities are accepted only when the
-        # alias system confirms them as a known canonical identity.
+        # The singular candidate is only a fallback. It must itself
+        # resolve to an established ingredient identity; merely being
+        # produced by grammatical singularization is not sufficient.
         if (
             identity in known_identities
-            or len(identity.split()) > 1
+            or identity in _INGREDIENT_ALIAS_TARGETS
         ):
             return identity
 
-    # Do not promote arbitrary leftover source text into an ingredient.
+        # Do not promote arbitrary leftover source text into an ingredient.
     # At this point, a valid identity must already have been established
     # by the application's ingredient vocabulary or alias layer above.
     #
@@ -6475,51 +6505,6 @@ def extract_ingredient_identity(text):
 
     if not final_identity:
         return ""
-
-    # UNIVERSAL FINAL GRAMMATICAL SINGULARIZATION
-    # The ingredient identity has already been isolated. Apply the same
-    # conservative singularization to ordinary plural ingredient names,
-    # while protecting known ingredient identities and irregular plurals.
-    if final_identity and final_identity not in known_ordered:
-        protected_plural = {
-            "wives",
-            "knives",
-            "lives",
-            "leaves",
-            "halves",
-            "selves",
-            "shelves",
-            "series",
-            "species",
-            "molasses",
-        }
-
-        words = final_identity.split()
-        singular_words = []
-
-        for word in words:
-            if word in protected_plural:
-                singular_words.append(word)
-            elif word.endswith("ies") and len(word) > 3:
-                singular_words.append(word[:-3] + "y")
-            elif word.endswith("oes") and len(word) > 3:
-                singular_words.append(word[:-2])
-            elif (
-                word.endswith(("sses", "shes", "ches", "xes", "zes"))
-                and len(word) > 3
-            ):
-                singular_words.append(word[:-2])
-            elif word.endswith(("ss", "us", "is")):
-                singular_words.append(word)
-            elif word.endswith("s") and len(word) > 1:
-                singular_words.append(word[:-1])
-            else:
-                singular_words.append(word)
-
-        singular_candidate = " ".join(singular_words).strip()
-
-        if singular_candidate and singular_candidate != final_identity:
-            final_identity = canonical_ingredient_identity(singular_candidate)
 
     # Final universal source/editorial boundary.
     # Enforce this immediately before returning the canonical identity so
