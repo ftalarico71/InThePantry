@@ -3861,10 +3861,15 @@ def user_facing_ingredient_identity(text):
 
     # A standalone preparation/source word is never an ingredient.
     if value.strip().lower() in {
+        "a",
+        "an",
+        "the",
         "topping",
         "optional",
         "instant",
         "fire",
+        "serve",
+        "serving",
         "juice",
         "sized",
         "birds eye",
@@ -3898,7 +3903,8 @@ def _preserve_pepper_flake_identity(raw_text, normalized_text):
         r"(?:\d+(?:\.\d+)?\s*)?"
         r"(?:crushed\s+)?"
         r"(?:red|green|yellow|orange|black|white)?\s*"
-        r"pepper\s+flakes?",
+        r"pepper\s+flakes?"
+        r"(?:\s+(?:crushed|ground|freshly\s+ground|coarsely\s+ground|finely\s+ground))?",
         source,
         flags=re.IGNORECASE,
     )
@@ -3908,6 +3914,12 @@ def _preserve_pepper_flake_identity(raw_text, normalized_text):
             r"^\s*\d+(?:\.\d+)?\s*",
             "",
             source,
+        )
+        identity = re.sub(
+            r"\s+(?:crushed|ground|freshly\s+ground|coarsely\s+ground|finely\s+ground)\s*$",
+            "",
+            identity,
+            flags=re.IGNORECASE,
         )
         identity = re.sub(r"\s+", " ", identity).strip().lower()
         return identity
