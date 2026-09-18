@@ -1126,7 +1126,26 @@ def canonical_ingredient_identity(text):
         "sweet onions": "sweet onion",
     }
 
-    text = singulars.get(text, text)
+    # Apply established grammatical singularization to the final noun
+    # of a compound ingredient as well.
+    #
+    # Examples:
+    #   mushrooms          -> mushroom
+    #   shiitake mushrooms -> shiitake mushroom
+    #   green onions       -> green onion
+    #
+    # Words not in the established singular map are preserved exactly.
+    # Therefore legitimate plural product identities such as
+    # "red pepper flakes" remain unchanged.
+    words = text.split()
+
+    if words:
+        last_word = words[-1]
+        singular_last_word = singulars.get(last_word, last_word)
+
+        if singular_last_word != last_word:
+            words[-1] = singular_last_word
+            text = " ".join(words)
 
     return re.sub(r"\s+", " ", text).strip()
 
@@ -3877,12 +3896,18 @@ def user_facing_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
-    # A standalone preparation/source word is never an ingredient.
+    # A standalone preparation/source/editorial word is never an ingredient.
+    # These are recipe prose artifacts, not ingredient identities.
     if value.strip().lower() in {
+        "a",
+        "an",
+        "the",
         "topping",
         "optional",
         "instant",
         "fire",
+        "serve",
+        "serving",
         "juice",
         "sized",
         "birds eye",
@@ -3916,7 +3941,9 @@ def _preserve_pepper_flake_identity(raw_text, normalized_text):
         r"(?:\d+(?:\.\d+)?\s*)?"
         r"(?:crushed\s+)?"
         r"(?:red|green|yellow|orange|black|white)?\s*"
-        r"pepper\s+flakes?",
+        r"pepper\s+flakes?"
+        r"(?:\s+(?:crushed|ground|freshly\s+ground|"
+        r"coarsely\s+ground|finely\s+ground))?",
         source,
         flags=re.IGNORECASE,
     )
@@ -3926,6 +3953,13 @@ def _preserve_pepper_flake_identity(raw_text, normalized_text):
             r"^\s*\d+(?:\.\d+)?\s*",
             "",
             source,
+        )
+        identity = re.sub(
+            r"\s+(?:crushed|ground|freshly\s+ground|"
+            r"coarsely\s+ground|finely\s+ground)\s*$",
+            "",
+            identity,
+            flags=re.IGNORECASE,
         )
         identity = re.sub(r"\s+", " ", identity).strip().lower()
         return identity
@@ -4439,6 +4473,28 @@ def match_recipe_to_pantry(recipe, pantry_items):
                 part,
                 normalized,
             )
+
+            # AUTHORITATIVE MATCHING IDENTITY
+            #
+            # preserve_source=True intentionally keeps source wording
+            # available during normalization. Before an ingredient can
+            # become a matching requirement, however, it must pass through
+            # the same authoritative identity resolver used by the
+            # 25-case identity regression.
+            #
+            # This prevents source/editorial wording such as:
+            #   "sized garlic"            -> "garlic"
+            #   "heaping broccoli florets" -> "broccoli"
+            #   "tomatoes seeded"         -> "tomato"
+            #   "container shiitake mushrooms" -> "shiitake mushroom"
+            #
+            # It also preserves real identities such as:
+            #   "red pepper flakes" -> "red pepper flakes"
+            #   "crispy chili oil"  -> "crispy chili oil"
+            authoritative_identity = extract_ingredient_identity(part)
+
+            if authoritative_identity:
+                normalized = authoritative_identity
 
             if not normalized:
                 continue
@@ -6269,8 +6325,47 @@ def extract_ingredient_identity(text):
                     return ingredient
 
                 identity = canonical_ingredient_identity(ingredient)
-                if identity:
-                    return identity
+                if not identity:
+                    continue
+
+                # Preserve an established singular vocabulary identity
+                # when canonicalization maps it back to its grammatical
+                # plural. This prevents legitimate singular identities
+                # such as "shiitake mushroom" from being rewritten as
+                # "shiitake mushrooms".
+                #
+                # Genuine aliases remain canonicalized normally:
+                #   scallion -> green onion
+                singular_identity = re.sub(
+                    r"\s+",
+                    " ",
+                    identity,
+                ).strip()
+
+                singular_identity = " ".join(
+                    singularize_word(word)
+                    for word in singular_identity.split()
+                ).strip()
+
+                # If canonicalization changed only the grammatical
+                # number of an established vocabulary identity, preserve
+                # the established singular ingredient name.
+                #
+                # Example:
+                #   shiitake mushroom -> shiitake mushrooms
+                # becomes:
+                #   shiitake mushroom
+                #
+                # Genuine aliases still canonicalize normally:
+                #   scallion -> green onion
+                if (
+                    ingredient == singular_candidate
+                    and identity != singular_candidate
+                    and singular_identity == singular_candidate
+                ):
+                    return singular_candidate
+
+                return identity
 
     # Before accepting an exact single-word plural vocabulary entry,
     # prefer its grammatical singular when that singular produces a
@@ -6475,6 +6570,31 @@ def extract_ingredient_identity(text):
                 or identity in _INGREDIENT_ALIAS_TARGETS
                 or len(identity.split()) > 1
             ):
+                # Preserve the grammatical singular when canonicalization
+                # changed only the number of an established ingredient.
+                #
+                # Example:
+                #   shiitake mushrooms -> shiitake mushroom
+                #
+                # Genuine aliases remain canonicalized normally:
+                #   scallion -> green onion
+                singular_identity = canonical_ingredient_identity(
+                    singular_candidate
+                )
+
+                singularized_identity = " ".join(
+                    singularize_word(word)
+                    for word in identity.split()
+                ).strip()
+
+                if (
+                    singular_identity
+                    and singular_candidate
+                    and singular_identity != singular_candidate
+                    and singularized_identity == singular_candidate
+                ):
+                    return singular_candidate
+
                 return identity
 
             continue
@@ -6482,6 +6602,23 @@ def extract_ingredient_identity(text):
         # The singular candidate is only a fallback. It must itself
         # resolve to an established ingredient identity; merely being
         # produced by grammatical singularization is not sufficient.
+        #
+        # If the alias layer resolves the singular candidate back to
+        # its grammatical plural, preserve the singular identity already
+        # established from the source text.
+        #
+        # Example:
+        #   shiitake mushrooms -> shiitake mushroom
+        #   alias lookup may resolve "shiitake mushroom" back to
+        #   "shiitake mushrooms". The identity remains singular.
+        #
+        # Genuine aliases are still allowed:
+        #   scallion -> green onion
+        singular_identity = singular(identity)
+
+        if singular_identity == current:
+            return current
+
         if (
             identity in known_identities
             or identity in _INGREDIENT_ALIAS_TARGETS
