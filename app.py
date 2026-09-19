@@ -544,7 +544,6 @@ COMMON_INGREDIENTS = {
     "Dairy & Eggs": [
         "eggs",
         "milk",
-        "cheese",
         "butter",
     ],
 
@@ -597,6 +596,18 @@ PASTA_GROUP = {
     ],
 }
 
+
+CHEESE_GROUP = {
+    "Cheese": [
+        "cheddar cheese",
+        "mozzarella",
+        "parmesan",
+        "feta cheese",
+        "ricotta cheese",
+        "cream cheese",
+        "cheese",
+    ]
+}
 
 MEAT_GROUPS = {
 
@@ -732,6 +743,10 @@ def clean_word(text):
 def canonical_ingredient_identity(text):
     if not isinstance(text, str):
         return ""
+    # Filter out conversational appendix fragments completely from scraper outputs
+    text = re.sub(r'\s*,?\s*\b(?:all\s+one|or\s+individual|all\s+the\s+spice\s+mix|sprinkle\s+at\s+the\s+end|or\s+substitute)\b.*$', '', text, flags=re.IGNORECASE)
+    if not isinstance(text, str):
+        return ""
 
     text = clean_word(text)
     if not text:
@@ -828,6 +843,10 @@ def canonical_ingredient_identity(text):
     # behind after pepper has been identified as a pantry staple.
     if re.fullmatch(r"coarse\s+pepper", text, flags=re.IGNORECASE):
         return ""
+
+    # Catch and fix layout phrases like 'swiss or cheese' or 'cheddar or cheese' before the splitter fragments them
+    if re.search(r'\b(swiss|cheddar|mozzarella|parmesan|feta|ricotta|cream)\s+or\s+cheese\b', text, flags=re.IGNORECASE):
+        text = re.sub(r'\b(swiss|cheddar|mozzarella|parmesan|feta|ricotta|cream)\s+or\s+cheese\b', r'\1 cheese', text, flags=re.IGNORECASE)
 
     # Handle explicit OR alternatives independently.
     if " or " in text:
@@ -2447,6 +2466,10 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
         if compound_component_cores:
             for user_item in user_ingredients or []:
+                # Absolute safety guard: Do NOT let a raw garlic selection fulfill a garlic powder recipe line requirement
+                u_item_low = user_item.lower().strip()
+                if "garlic powder" in recipe_name.lower() and u_item_low == "garlic":
+                    continue
                 user_name = clean_word(user_item)
 
                 if not user_name:
@@ -4036,6 +4059,11 @@ def user_facing_ingredient_identity(text):
 
     if "juice " in value.lower() or "zest " in value.lower():
         value = value.replace("juice ", "").replace("zest ", "").strip()
+    
+    # Strip trailing scraper fragment clutter and prefix verbs like 'squeezed' or conversational remnants
+    value = re.sub(r'(?i)\b(?:squeezed|freshly\s+squeezed)\s+', '', value)
+    value = re.sub(r'(?i)\s*,?\s*\b(?:or\s+individual\s+skin|or\s+individual|all\s+one|or\s+herb\s+you)\b.*$', '', value)
+    value = value.strip()
 
     # User-facing ingredient identity is singular where the plural
     # adds no ingredient distinction.
@@ -8537,8 +8565,11 @@ def find_recipes(
 
             # Prevent duplication loops (like olive oil and generic oil surfacing simultaneously)
             if identity and identity not in matched:
-                if identity == "oil" and "olive oil" in matched:
+                # Deduplicate multi-word oil entries cleanly (e.g., if you have vegetable oil, don't output generic 'oil')
+                if identity == "oil" and ("olive oil" in matched or "vegetable oil" in matched):
                     continue
+                if identity == "vegetable oil" and "oil" in matched:
+                    matched.remove("oil")
                 matched.append(identity)
 
         missing_items = pantry_result.get(
@@ -8555,6 +8586,12 @@ def find_recipes(
 
             if identity and identity not in missing:
                 missing.append(identity)
+                
+        # Global Citrus Consolidation: If 'lime juice' or 'lemon juice' leaks onto the list alongside the raw fruit, clean it up
+        if "lime" in missing and "lime juice" in missing:
+            missing.remove("lime juice")
+        if "lemon" in missing and "lemon juice" in missing:
+            missing.remove("lemon juice")
 
         # Build the substitution display used by
         # the existing webpage.
@@ -9739,7 +9776,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 <button
                     type="button"
-                    class="ingredient-category meat-group"
+                    class="ingredient-category meat-group category-color-1"
+                    style="border-left: 6px solid #d96b5f; background: #fff7f5; color: #8f352c; margin-top: 5px; margin-bottom: 5px;"
                     onclick="toggleIngredientCategory(this)"
                 >
                     <span>{{ meat_group }}</span>
@@ -9773,10 +9811,11 @@ document.addEventListener("DOMContentLoaded", function () {
 
             <button
                 type="button"
-                class="ingredient-category meat-group"
+                class="ingredient-category meat-group category-color-4"
+                style="border-left: 6px solid #5c8fc7; background: #f5f9fe; color: #315f8d; margin-top: 5px; margin-bottom: 5px;"
                 onclick="toggleIngredientCategory(this)"
             >
-                <span>Pasta</span>
+                <span>Pasta Varieties</span>
                 <span class="category-arrow">▶</span>
             </button>
 
@@ -9820,6 +9859,92 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 {% endif %}
 
+            {% endfor %}
+
+        {% elif category == "Dairy & Eggs" %}
+
+            <button
+                type="button"
+                class="ingredient-category meat-group category-color-2"
+                style="border-left: 6px solid #5b9b6d; background: #f5fbf6; color: #356a43; margin-top: 5px; margin-bottom: 5px;"
+                onclick="toggleIngredientCategory(this)"
+            >
+                <span>Cheese Varieties</span>
+                <span class="category-arrow">▶</span>
+            </button>
+
+            <div class="ingredient-grid category-grid">
+                {% for ingredient in ["cheddar cheese", "mozzarella", "parmesan", "feta cheese", "ricotta cheese", "cream cheese", "cheese"] %}
+                    <label class="ingredient-option">
+                        <input
+                            type="checkbox"
+                            name="common_ingredients"
+                            value="{{ ingredient }}"
+                            {% if ingredient in selected_common %}checked{% endif %}
+                        >
+                        {# Strip the repetitive 'cheese' word suffix cleanly on front-end checkbox labels #}
+                        {% if ingredient == "cheese" %}
+                            <span id="other-cheese-label">Other Cheese</span>
+                            <script>
+                                document.addEventListener("DOMContentLoaded", function() {
+                                    const cb = document.querySelector('input[value="cheese"]');
+                                    if (cb && !cb.dataset.promptBound) {
+                                        cb.dataset.promptBound = "true";
+                                        cb.addEventListener("change", function() {
+                                            const customInput = document.querySelector('input[name="ingredients"]');
+                                            if (this.checked) {
+                                                let specificCheese = prompt("What type of other cheese do you have? (e.g., Gouda, Swiss, Provolone):");
+                                                if (specificCheese && specificCheese.trim()) {
+                                                    specificCheese = specificCheese.trim();
+                                                    // Ensure we cleanly attach the word 'cheese' if the user omitted it
+                                                    if (!specificCheese.toLowerCase().includes("cheese")) {
+                                                        specificCheese += " Cheese";
+                                                    }
+                                                    this.dataset.customCheeseValue = specificCheese;
+                                                    
+                                                    if (customInput) {
+                                                        let currentVal = customInput.value.trim();
+                                                        if (currentVal) {
+                                                            if (!currentVal.endsWith(",")) currentVal += ",";
+                                                            customInput.value = currentVal + " " + specificCheese;
+                                                        } else {
+                                                            customInput.value = specificCheese;
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Uncheck if the user hits cancel or types nothing
+                                                    this.checked = false;
+                                                }
+                                            } else {
+                                                // If they uncheck it, safely clear out that specific cheese string from the input field
+                                                if (customInput && this.dataset.customCheeseValue) {
+                                                    const removeVal = this.dataset.customCheeseValue;
+                                                    let currentVal = customInput.value;
+                                                    let regex = new RegExp(',?\\s*' + removeVal.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
+                                                    customInput.value = currentVal.replace(regex, '').replace(/^\s*,\s*/, '').trim();
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+                            </script>
+                        {% else %}
+                            {{ ingredient.replace(" cheese", "")|title }}
+                        {% endif %}
+                    </label>
+                {% endfor %}
+            </div>
+
+            {% for ingredient in ingredients %}
+                <label class="ingredient-option">
+                    <input
+                        type="checkbox"
+                        name="common_ingredients"
+                        value="{{ ingredient }}"
+                        {% if ingredient in selected_common %}checked{% endif %}
+                    >
+                    {{ ingredient|title }}
+                </label>
             {% endfor %}
 
         {% else %}
@@ -10357,15 +10482,34 @@ def home():
             )
 
 
-    # Final UI check: Ensure any generalized 'beef' display string reflects the user's chosen pantry cut
+    # Final UI check: Ensure any generalized 'beef' or 'chicken' display string reflects the user's chosen pantry cut
     if recipes:
-        # Determine what specific cut the user checked off
         pantry_cuts = [x.lower() for x in selected_common or []] + entered.lower().split(",")
-        chosen_cut = "chuck roast" # Default fallback
+        chosen_cut = "chuck roast"
         for cut in ["chuck roast", "stew meat", "brisket", "ground beef", "steak"]:
             if any(cut in item for item in pantry_cuts):
                 chosen_cut = cut
                 break
+                
+        # Handle poultry display tracking configurations identically
+        chosen_poultry = "chicken"
+        for poultry in ["chicken breast", "chicken thigh", "chicken drumstick", "chicken wing"]:
+            if any(poultry in item for item in pantry_cuts):
+                chosen_poultry = poultry
+                break
+        
+        for r in recipes:
+            if "matched" in r and r["matched"]:
+                r["matched"] = [chosen_cut if x.lower() == "beef" else (chosen_poultry if x.lower() == "chicken" else x) for x in r["matched"]]
+                if entered and "cheese" in entered.lower():
+                    custom_items = [x.strip().lower() for x in entered.split(",") if x.strip()]
+                    for item in custom_items:
+                        if "cheese" in item and item != "cheese":
+                            r["matched"] = [item if x.lower() == "cheese" else x for x in r["matched"]]
+                # Deduplicate elements
+                r["matched"] = list(dict.fromkeys(r["matched"]))
+            if "ingredients" in r and r["ingredients"]:
+                r["ingredients"] = [chosen_cut if str(x).lower() == "beef" else (chosen_poultry if str(x).lower() == "chicken" else x) for x in r["ingredients"]]
         
         for r in recipes:
             if "matched" in r and r["matched"]:
@@ -10373,6 +10517,18 @@ def home():
             if "ingredients" in r and r["ingredients"]:
                 r["ingredients"] = [chosen_cut if str(x).lower() == "beef" else x for x in r["ingredients"]]
 
+    if recipes:
+        pantry_low = [str(x).lower() for x in selected_common or []] + entered.lower().split(",")
+        has_cheddar = any("cheddar" in x for x in pantry_low)
+        has_parmesan = any("parmesan" in x for x in pantry_low)
+        for r in recipes:
+            if "matched" in r and r["matched"]:
+                r["matched"] = ["swiss cheese" if str(x).lower() == "swiss or cheese" else x for x in r["matched"]]
+                if not has_cheddar:
+                    r["matched"] = [x for x in r["matched"] if "cheddar" not in str(x).lower()]
+                if not has_parmesan:
+                    r["matched"] = [x for x in r["matched"] if "parmesan" not in str(x).lower()]
+                r["matched"] = list(dict.fromkeys(r["matched"]))
     return render_template_string(
         HTML,
         recipes=recipes,
