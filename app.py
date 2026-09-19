@@ -25,6 +25,7 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 RECIPE_CACHE = {}
+# Cache cleared for active sandbox refresh
 # ---------------------------------------------------------
 # PANTRY STAPLES
 # These don't count as ingredients the user needs to buy.
@@ -2817,10 +2818,20 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     })
 
     def resolve_meat_parent(name):
-        """Resolve an exact meat variant or descriptive steak to its animal parent."""
         name = clean_word(name)
         if not name:
             return None
+        name_lower = name.lower()
+        if "beef" in name_lower or "steak" in name_lower or "chuck" in name_lower or "stew meat" in name_lower:
+            return "beef"
+        if "chicken" in name_lower:
+            return "chicken"
+        if "pork" in name_lower:
+            return "pork"
+        if "turkey" in name_lower:
+            return "turkey"
+        if "lamb" in name_lower:
+            return "lamb"
             
         if name.startswith("beef chuck") or name.startswith("beef round"):
             return "beef" 
