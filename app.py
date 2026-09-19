@@ -1252,6 +1252,44 @@ def ingredient_alias(text):
 
     typo_candidates = _get_ingredient_alias_candidates()
 
+    # Protect true ingredient identities from fuzzy typo correction.
+    # A known canonical ingredient must not be silently changed into
+    # another ingredient merely because the names are similar.
+    #
+    # Descriptive vocabulary must still pass through the normal alias
+    # layer, so entries such as "boneless chicken breast" can still
+    # normalize to "chicken breast".
+    known_ingredient_names = set(_get_ingredient_alias_candidates())
+
+    for family_values in CORE_INGREDIENTS.values():
+        known_ingredient_names.update(
+            value.strip().lower()
+            for value in family_values
+            if isinstance(value, str) and value.strip()
+        )
+
+    for category_values in COMMON_INGREDIENTS.values():
+        known_ingredient_names.update(
+            value.strip().lower()
+            for value in category_values
+            if isinstance(value, str) and value.strip()
+        )
+
+    if text in known_ingredient_names:
+        canonical_known = canonical_ingredient_identity(text)
+
+        # Protect only true canonical identities. Descriptive vocabulary
+        # entries must still pass through the normal alias layer.
+        #
+        # Examples:
+        #   tomato                  -> protected as tomato
+        #   potato                  -> protected as potato
+        #   boneless chicken breast -> allowed to normalize to chicken breast
+        #   potatoes                -> allowed to normalize to potato
+        if canonical_known == text:
+            _INGREDIENT_ALIAS_CACHE[raw_text] = text
+            return text
+
     if text not in typo_candidates and text and text != "cracked pepper":
         close = get_close_matches(
             text,
@@ -3273,17 +3311,49 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
             # This does NOT make different beef cuts interchangeable.
             # Ground/non-ground protection remains authoritative below.
             # -------------------------------------------------
-            brisket_variants = {
-                "beef brisket",
-                "brisket",
-                "whole packer brisket",
-                "packer brisket",
-                "untrimmed brisket",
-            }
+            def specific_meat_base(name):
+                name = clean_word(name)
+                if not name:
+                    return None
+
+                if is_ground_meat(name):
+                    return None
+
+                parent = resolve_meat_parent(name)
+                if not parent:
+                    return None
+
+                # A bare animal name is the generic meat identity,
+                # not a specific cut.
+                if name == parent:
+                    return None
+
+                # A specific cut may be written with or without the
+                # animal prefix. Normalize only that optional prefix.
+                #
+                # beef chuck roast -> chuck roast
+                # chuck roast      -> chuck roast
+                #
+                # Do not turn generic "beef" into a specific cut, and
+                # do not make different cuts interchangeable.
+                base = name
+                prefix = f"{parent} "
+
+                if base.startswith(prefix):
+                    base = base[len(prefix):].strip()
+
+                if not base or base == parent:
+                    return None
+
+                return singular(base)
+
+            recipe_specific_base = specific_meat_base(recipe_name)
+            user_specific_base = specific_meat_base(user_name)
 
             if (
-                original_recipe_name in brisket_variants
-                and original_user_name in brisket_variants
+                recipe_specific_base
+                and user_specific_base
+                and recipe_specific_base == user_specific_base
             ):
                 return True
 
