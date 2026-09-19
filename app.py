@@ -602,10 +602,10 @@ MEAT_GROUPS = {
 
     "Beef": [
         "ground beef",
-        "beef brisket",
-        "beef steak",
+        "brisket",
+        "steak",
         "chuck roast",
-        "beef stew meat",
+        "stew meat",
     ],
 
     "Chicken": [
@@ -2259,6 +2259,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     if (
         recipe_core is not None
         and len(recipe_name.split()) == 1
+        and recipe_core not in ["beef", "chicken", "pork", "turkey", "lamb"]
     ):
         for raw_user_item in (user_ingredients or []):
             user_name = clean_word(raw_user_item)
@@ -3991,11 +3992,18 @@ def get_sensible_substitutions(ingredient):
 def user_facing_ingredient_identity(text):
     """
     Final UI-only ingredient cleanup.
-
-    The matching engine keeps meaningful internal distinctions.
-    This layer removes recipe-source wording that is not part of
-    the ingredient identity shown to the user.
     """
+    if not text:
+        return ""
+    # Make sure specific, valuable sub-cuts keep their identity in the UI
+    t_low = text.lower()
+    if "chuck" in t_low or "roast" in t_low:
+        if "chuck" in t_low and "roast" in t_low: return "chuck roast"
+        if "chuck" in t_low: return "chuck roast"
+    if "stew meat" in t_low:
+        return "stew meat"
+    if "brisket" in t_low:
+        return "brisket" 
     if not isinstance(text, str):
         return ""
 
@@ -4860,7 +4868,22 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
         # Skip standard pantry staples entirely from having or missing counts
         # Force combined staple and spice strings to separate cleanly from total scores
-        if matches(name) or contextual_match:
+        # Absolute normalization shortcut for core meat sub-cuts before matching evaluation
+        eval_name = name.lower()
+        if "beef chuck" in eval_name or "beef round" in eval_name or "beef stew meat" in eval_name:
+            if "beef" in pantry or any("beef" in item for item in pantry):
+                name = "beef"
+
+        # If the recipe requires a generic animal parent, check if the user has ANY variant of that animal in their pantry
+        eval_name = name.lower().strip()
+        protein_matched = False
+        
+        if eval_name in ["beef", "chicken", "pork", "turkey", "lamb"]:
+            # Check if any checked item in the user's pantry contains the animal name (e.g. 'ground beef' satisfies 'beef')
+            if any(eval_name in item.lower() for item in pantry_items or []):
+                protein_matched = True
+
+        if matches(name) or contextual_match or protein_matched:
             display_name = user_facing_ingredient_identity(name)
             if display_name:
                 have.append({
@@ -8512,7 +8535,10 @@ def find_recipes(
                 item.get("ingredient", "")
             )
 
-            if identity:
+            # Prevent duplication loops (like olive oil and generic oil surfacing simultaneously)
+            if identity and identity not in matched:
+                if identity == "oil" and "olive oil" in matched:
+                    continue
                 matched.append(identity)
 
         missing_items = pantry_result.get(
@@ -10232,6 +10258,19 @@ def home():
                 canonical_ingredient_identity(item)
                 for item in user_ingredients
             ]
+            
+            # Map bare generic 'beef' tokens inside the final matching display results array back to what the user checked
+            pantry_cuts = [x.lower() for x in selected_common or []] + entered.lower().split(",")
+            chosen_cut = "beef"
+            for cut in ["chuck roast", "stew meat", "brisket", "ground beef", "steak"]:
+                if any(cut in item for item in pantry_cuts):
+                    chosen_cut = cut
+                    break
+            
+            if recipes:
+                for r in recipes:
+                    if "matched" in r:
+                        r["matched"] = [chosen_cut if x.lower() == "beef" else x for x in r["matched"]]
 
             user_ingredients = [
                 item
@@ -10317,6 +10356,22 @@ def home():
                 selected_diet=selected_diet
             )
 
+
+    # Final UI check: Ensure any generalized 'beef' display string reflects the user's chosen pantry cut
+    if recipes:
+        # Determine what specific cut the user checked off
+        pantry_cuts = [x.lower() for x in selected_common or []] + entered.lower().split(",")
+        chosen_cut = "chuck roast" # Default fallback
+        for cut in ["chuck roast", "stew meat", "brisket", "ground beef", "steak"]:
+            if any(cut in item for item in pantry_cuts):
+                chosen_cut = cut
+                break
+        
+        for r in recipes:
+            if "matched" in r and r["matched"]:
+                r["matched"] = [chosen_cut if x.lower() == "beef" else x for x in r["matched"]]
+            if "ingredients" in r and r["ingredients"]:
+                r["ingredients"] = [chosen_cut if str(x).lower() == "beef" else x for x in r["ingredients"]]
 
     return render_template_string(
         HTML,
