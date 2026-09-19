@@ -52,6 +52,12 @@ def test_ingredient_matching():
         ("ground chicken", ["ground chicken"], True),
         ("bone-in chicken breast", ["chicken"], True),
         ("bone-in chicken breast", ["bone-in chicken breast"], True),
+        ("beef chuck roast", ["chuck roast"], True),
+        ("chuck roast", ["beef chuck roast"], True),
+        ("beef brisket", ["brisket"], True),
+        ("beef chuck roast", ["beef brisket"], False),
+        ("beef", ["chuck roast"], False),
+        ("chuck roast", ["beef"], True),
         ("bell pepper", ["red bell pepper"], True),
         ("red bell pepper", ["bell pepper"], True),
     ]
