@@ -2657,7 +2657,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
     meat_parents = {
         "beef": {
-            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "brisket", "whole packer brisket", "packer brisket", "untrimmed brisket", "beef shank",
+            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "brisket", "whole packer brisket", "packer brisket", "untrimmed brisket", "beef shank", "beef chuck or round", "beef round", "beef chuck cut into", "beef chuck blocks",
             "beef steak", "beef roast", "roast beef", "beef stew meat",
             "beef short ribs", "beef tenderloin", "beef sirloin",
             "steak", "ribeye", "ribeyes", "rib eye", "rib eyes",
@@ -2821,6 +2821,9 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         name = clean_word(name)
         if not name:
             return None
+            
+        if name.startswith("beef chuck") or name.startswith("beef round"):
+            return "beef" 
 
         name = ingredient_alias(name)
         name = clean_word(name)
@@ -4002,6 +4005,9 @@ def user_facing_ingredient_identity(text):
         value,
         flags=re.IGNORECASE,
     )
+
+    if "juice " in value.lower() or "zest " in value.lower():
+        value = value.replace("juice ", "").replace("zest ", "").strip()
 
     # User-facing ingredient identity is singular where the plural
     # adds no ingredient distinction.
@@ -5666,6 +5672,8 @@ def normalize_recipe_ingredient(text, preserve_source=False):
         if alternative:
             alternatives.append(alternative)
 
+    text = re.sub(r'\s+or\s+(?:two|three|four|more|less|pieces|sliced|chopped)', '', text, flags=re.IGNORECASE)
+    
     # Capture the primary side before a comma-delimited OR.
     comma_or_match = re.search(
         r'^(.*?)\s*,\s*or\s+(.+?)\s*$',
