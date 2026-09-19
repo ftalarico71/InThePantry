@@ -102,6 +102,15 @@ CORE_INGREDIENTS = {
         "beef short ribs",
         "beef tenderloin",
         "beef sirloin",
+        "beef chuck or round",
+        "beef round",
+        "beef chuck cut into",
+        "beef chuck blocks",
+        "beef broth",
+        "beef stock",
+        "beef bouillon",
+        "beef bouillon cubes",
+        "vegetable or beef broth",
     },
 
     "pork": {
@@ -8518,7 +8527,7 @@ def find_recipes(
                 item.get("ingredient", "")
             )
 
-            if identity:
+            if identity and identity not in missing:
                 missing.append(identity)
 
         # Build the substitution display used by
