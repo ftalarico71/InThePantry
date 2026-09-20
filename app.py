@@ -670,6 +670,11 @@ MEAT_GROUPS = {
 def clean_word(text):
     if not text:
         return ""
+    # Make sure underscores in half_and_half aren't accidentally removed by punctuation cleaners
+    text = re.sub(r'\bhalf\s+and\s+half\b', 'half_and_half', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bhalf[- ]+and[- ]+half\b', 'half_and_half', text, flags=re.IGNORECASE)
+    if not text:
+        return ""
 
 
     text = text.lower().strip()
@@ -4060,6 +4065,12 @@ def user_facing_ingredient_identity(text):
     if "juice " in value.lower() or "zest " in value.lower():
         value = value.replace("juice ", "").replace("zest ", "").strip()
     
+    # Global Citrus Consolidation: Collapse 'lemon juice', 'lemon zest', 'lime juice', etc. down to the baseline fruit
+    if "lemon juice" in value.lower() or "lemon zest" in value.lower():
+        value = "lemon"
+    if "lime juice" in value.lower() or "lime zest" in value.lower():
+        value = "lime" 
+    
     # Strip trailing scraper fragment clutter and prefix verbs like 'squeezed' or conversational remnants
     value = re.sub(r'(?i)\b(?:squeezed|freshly\s+squeezed)\s+', '', value)
     value = re.sub(r'(?i)\s*,?\s*\b(?:or\s+individual\s+skin|or\s+individual|all\s+one|or\s+herb\s+you)\b.*$', '', value)
@@ -4069,6 +4080,7 @@ def user_facing_ingredient_identity(text):
     # adds no ingredient distinction.
     if value.strip().lower() == "steaks":
         value = "steak"
+    if value.lower() == "half_and_half": return "half and half"
 
     # Remove scraped measurement abbreviations that can survive
     # earlier normalization when they appear directly before an
@@ -4906,10 +4918,14 @@ def match_recipe_to_pantry(recipe, pantry_items):
         eval_name = name.lower().strip()
         protein_matched = False
         
-        if eval_name in ["beef", "chicken", "pork", "turkey", "lamb"]:
-            # Check if any checked item in the user's pantry contains the animal name (e.g. 'ground beef' satisfies 'beef')
-            if any(eval_name in item.lower() for item in pantry_items or []):
-                protein_matched = True
+        if any(p in eval_name for p in ["beef", "chicken", "pork", "turkey", "lamb"]):
+            # Find which protein keyword is in the recipe line
+            for p in ["beef", "chicken", "pork", "turkey", "lamb"]:
+                if p in eval_name:
+                    # If the user has any cut of this animal checked, automatically satisfy the generic or compound requirement
+                    if any(p in item.lower() for item in pantry_items or []):
+                        protein_matched = True
+                        break
 
         if matches(name) or contextual_match or protein_matched:
             display_name = user_facing_ingredient_identity(name)
@@ -5369,6 +5385,16 @@ def clean_recipe_ingredient_metadata(text):
         text,
         flags=re.IGNORECASE,
     )
+    # Global Branding & Editorial Clipping (e.g. 'such as mae ploy', 'paleo use t', 'a or less')
+    text = re.sub(r'(?i)\s*,?\s*\b(?:such\s+as\s+[a-z\s]+|paleo\s+use\s+[a-z\s]*|a\s+or\s+less|or\s+yellow|or\s+light\s+soy)\b', '', text)
+    # Filter out multi-or wine commentary and preparation descriptor noise
+    text = re.sub(r'(?i)\s+or\s+port\s+is\s+good\s+or\s+beef\s+broth\b', ' or beef broth', text)
+    text = re.sub(r'(?i)\b(?:unpeeled|peeled|finely\s+grated|batch|toppings)\b', '', text)
+    
+    # Protect 'half-and-half' from getting split into a single fragment word before punctuation stripping
+    text = re.sub(r'\bhalf[- ]+and[- ]+half\b', 'half_and_half', text, flags=re.IGNORECASE)
+    # Mute dangling brand remains like 'lawry s'
+    text = re.sub(r'\blawry\s+s\b', 'seasoned salt', text, flags=re.IGNORECASE)
 
     # Common editorial prefixes.
     text = re.sub(
@@ -6029,6 +6055,10 @@ def normalize_recipe_ingredient(text, preserve_source=False):
 
     # Reduce descriptive meat preparation wording to the actual cut.
     text = re.sub(r'\bcenter\s+cut\s+(pork\s+loin)\b.*', r'\1', text)
+    
+    # Force collapse complex web variations of soy sauce down to a clean singular ingredient representation
+    if "soy sauce" in text or "light soy" in text:
+        text = "soy sauce" 
 
     # Remove trailing bone/skin preparation wording after the ingredient identity.
     # Examples: "chicken breasts, bone and skin on" -> "chicken breasts"
@@ -8159,6 +8189,8 @@ def find_recipes(
         return []
 
     scored_recipes = []
+    # Track core keywords in recipe titles to completely prevent duplicate recipe types from stacking
+    seen_recipe_clusters = set()
 
     # Identify specifically selected proteins so recipes using
     # the user's chosen meat are ranked ahead of recipes that
@@ -8585,6 +8617,11 @@ def find_recipes(
             )
 
             if identity and identity not in missing:
+                if identity.lower() == "sesame":
+                    identity = "sesame seeds" 
+                # Prevent sub-string variations of soy sauce or chiles from duplication clutter
+                if identity == "soy sauce" and any("soy" in x for x in missing):
+                    continue
                 missing.append(identity)
                 
         # Global Citrus Consolidation: If 'lime juice' or 'lemon juice' leaks onto the list alongside the raw fruit, clean it up
@@ -8680,6 +8717,19 @@ def find_recipes(
         # Some extractors return a list of images.
         if isinstance(image, list):
             image = image[0] if image else None
+
+        # Algorithmic Variety Filter: Extract core naming keywords from the recipe title
+        recipe_title_raw = recipe.get("name", result.get("title", "Recipe")).lower()
+        # Clean title to get core variations (e.g., 'garlic butter chicken' becomes 'garlic_butter_chicken')
+        title_words = re.findall(r'\b(garlic|butter|fried|stew|soup|curry|parmesan|creamy|alfredo|marsala|piccata|stir|fry|roasted|baked|rice|risotto)\b', recipe_title_raw)
+        title_cluster_key = "_".join(sorted(list(set(title_words))))
+        
+        # If we have already captured 2 variations of this specific type of recipe, skip the rest to force diversity
+        if title_cluster_key and len(title_cluster_key) > 3:
+            if list(seen_recipe_clusters).count(title_cluster_key) >= 2:
+                print(f"FORCING VARIETY: Skipping duplicate recipe type: {recipe_title_raw}")
+                continue
+            seen_recipe_clusters.add(title_cluster_key)
 
         scored_recipes.append({
             "name": recipe.get(
@@ -10497,6 +10547,13 @@ def home():
             if any(poultry in item for item in pantry_cuts):
                 chosen_poultry = poultry
                 break
+                
+        # Handle lamb display tracking configurations identically
+        chosen_lamb = "lamb"
+        for lamb_cut in ["lamb chop", "lamb shoulder", "lamb loin", "lamb shank", "ground lamb"]:
+            if any(lamb_cut in item for item in pantry_cuts):
+                chosen_lamb = lamb_cut
+                break
         
         for r in recipes:
             if "matched" in r and r["matched"]:
@@ -10529,6 +10586,35 @@ def home():
                 if not has_parmesan:
                     r["matched"] = [x for x in r["matched"] if "parmesan" not in str(x).lower()]
                 r["matched"] = list(dict.fromkeys(r["matched"]))
+    # Ultimate Final-Gateway Variety Re-sorter: Break up repetitive recipe title clusters
+    if recipes and len(recipes) > 2:
+        diverse_top_list = []
+        duplicate_clusters = []
+        seen_exact_slugs = set()
+        
+        for r in recipes:
+            name_raw = r.get("name", "").lower()
+            # Generate a unique slug based on core recipe identities (e.g. 'garlic butter chicken')
+            slug_words = re.findall(r'\b(garlic|butter|chicken|beef|stew|soup|fried|baked|parmesan|creamy|rice|risotto)\b', name_raw)
+            slug_key = "_".join(sorted(list(set(slug_words))))
+            
+            if slug_key and len(slug_key) > 3:
+                # If we've already seen this exact style of recipe in the top slots, move the clone to the back
+                if slug_key in seen_exact_slugs:
+                    duplicate_clusters.append(r)
+                else:
+                    diverse_top_list.append(r)
+                    # Limit the top variations of a single type to give alternative recipes room to surface
+                    if list(seen_exact_slugs).count(slug_key) >= 1:
+                        pass
+                    else:
+                        seen_exact_slugs.add(slug_key)
+            else:
+                diverse_top_list.append(r)
+                
+        # Stitch the diverse recipes to the front and push the clones to the bottom
+        recipes = diverse_top_list + duplicate_clusters
+
     return render_template_string(
         HTML,
         recipes=recipes,
