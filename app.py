@@ -1,3 +1,39 @@
+import difflib
+
+import difflib
+
+def safe_fuzzy_correct(term):
+    if not term or not isinstance(term, str):
+        return term
+    clean = term.strip().lower()
+    known = [
+        'parsley', 'garlic', 'onion', 'ground beef', 'cheddar cheese',
+        'butter', 'milk', 'tomato', 'bell pepper', 'flour', 'rice',
+        'olive oil', 'vegetable oil', 'carrot', 'celery', 'oregano',
+        'thyme', 'basil', 'tomato paste', 'vegetable stock', 'barley',
+        'chicken', 'pork', 'turkey', 'pepper', 'salt', 'spinach',
+        'potato', 'potatoes', 'sweet potato', 'sweet potatoes',
+        'lemon', 'lime', 'cheese', 'egg', 'eggs', 'bacon', 'heavy cream'
+    ]
+    matches = difflib.get_close_matches(clean, known, n=1, cutoff=0.55)
+    return matches[0] if matches else clean
+
+
+
+def fuzzy_correct_ingredient(term, threshold=0.75):
+    if not term or not isinstance(term, str):
+        return term
+    clean_term = term.strip().lower()
+    # List of common ingredients to check against
+    known = [
+        'parsley', 'garlic', 'onion', 'ground beef', 'cheddar cheese',
+        'butter', 'milk', 'tomato', 'bell pepper', 'flour', 'rice',
+        'olive oil', 'vegetable oil', 'carrot', 'celery', 'oregano',
+        'thyme', 'basil', 'tomato paste', 'vegetable stock', 'barley'
+    ]
+    matches = difflib.get_close_matches(clean_term, known, n=1, cutoff=threshold)
+    return matches[0] if matches else clean_term
+
 from flask import Flask, request, render_template_string
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3859,8 +3895,7 @@ def ingredient_matches(recipe_ingredient, user_ingredients, allow_pantry_staple=
     )
 
     # Keep the long-running production worker cache bounded.
-    if len(_INGREDIENT_MATCH_CACHE) >= 10000:
-        _INGREDIENT_MATCH_CACHE.clear()
+    _INGREDIENT_MATCH_CACHE.clear()
 
     _INGREDIENT_MATCH_CACHE[cache_key] = result
 
@@ -4536,7 +4571,11 @@ def match_recipe_to_pantry(recipe, pantry_items):
     # -----------------------------------------------------
 
     def matches(recipe_name):
-        # Salt and pepper are basic pantry staples.
+        # FIX: Normalize brisket and generic oil matching vocabulary
+        r_clean = recipe_name.lower().strip()
+        if "brisket" in r_clean: recipe_name = "brisket"
+        if r_clean == "oil" or "oil or similar" in r_clean:
+            if any("oil" in str(item).lower() for item in pantry_items or []): return True        # Salt and pepper are basic pantry staples.
         if (
             "salt" in recipe_name
             and "pepper" in recipe_name
@@ -4918,15 +4957,15 @@ def match_recipe_to_pantry(recipe, pantry_items):
         eval_name = name.lower().strip()
         protein_matched = False
         
-        if any(p in eval_name for p in ["beef", "chicken", "pork", "turkey", "lamb"]):
-            # Find which protein keyword is in the recipe line
+        # FIX: Blocks flavorings/liquids from matching raw proteins
+        is_flavoring = any(w in eval_name for w in ["broth", "stock", "base", "bouillon", "cube", "seasoning"])
+
+        if not is_flavoring and any(p in eval_name for p in ["beef", "chicken", "pork", "turkey", "lamb"]):
             for p in ["beef", "chicken", "pork", "turkey", "lamb"]:
                 if p in eval_name:
-                    # If the user has any cut of this animal checked, automatically satisfy the generic or compound requirement
                     if any(p in item.lower() for item in pantry_items or []):
                         protein_matched = True
                         break
-
         if matches(name) or contextual_match or protein_matched:
             display_name = user_facing_ingredient_identity(name)
             if display_name:
@@ -5535,8 +5574,10 @@ def clean_recipe_ingredient_metadata(text):
     # After removing the first measurement, the second one must also be
     # removed rather than becoming part of the ingredient identity.
     previous = None
-    while text != previous:
+    loop_guard_1 = 0
+    while text != previous and loop_guard_1 < 20:
         previous = text
+        loop_guard_1 += 1
 
         text = re.sub(
             rf"^\s*{measurement_range}\s*",
@@ -6462,8 +6503,10 @@ def _extract_ingredient_identity_base(text):
     )
 
     previous = None
-    while text != previous:
+    loop_guard_1 = 0
+    while text != previous and loop_guard_1 < 20:
         previous = text
+        loop_guard_1 += 1
         text = quantity.sub("", text, count=1).strip()
 
     # Remove standalone unit/package prefixes that can survive malformed
@@ -7821,7 +7864,7 @@ def get_recipe_ingredients(recipe):
 
         if ingredient:
 
-            ingredient = ingredient.strip()
+            ingredient = safe_fuzzy_correct(safe_fuzzy_correct(ingredient.strip()))
 
             if ingredient:
 
@@ -10418,11 +10461,11 @@ def home():
 
             user_ingredients = [
 
-                ingredient.strip()
+                safe_fuzzy_correct(ingredient.strip())
 
                 for ingredient in entered.split(",")
 
-                if ingredient.strip()
+                if safe_fuzzy_correct(ingredient.strip())
             ]
  
             user_ingredients.extend(
@@ -10430,7 +10473,7 @@ def home():
             )
 
             user_ingredients = [
-                canonical_ingredient_identity(item)
+                (canonical_ingredient_identity(item) or item.strip().lower())
                 for item in user_ingredients
             ]
             
@@ -10454,7 +10497,7 @@ def home():
             ]
 
             selected_common = [
-                canonical_ingredient_identity(item)
+                (canonical_ingredient_identity(item) or item.strip().lower())
                 for item in selected_common
             ]
 
