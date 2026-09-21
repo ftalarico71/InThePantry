@@ -746,6 +746,45 @@ def clean_word(text):
 # ---------------------------------------------------------
 
 def canonical_ingredient_identity(text):
+
+    # Explicit dairy/cheese overrides
+    if isinstance(text, str):
+        _clean_dairy = text.strip().lower()
+        _dairy_map = {
+            'mozzarella': 'mozzarella cheese',
+            'mozarella': 'mozzarella cheese',
+            'ricotta': 'ricotta cheese',
+            'feta': 'feta cheese',
+            'cream': 'cream cheese',
+        }
+        if _clean_dairy in _dairy_map:
+            return _dairy_map[_clean_dairy]
+
+    # Explicit dairy/cheese overrides
+    if isinstance(text, str):
+        _clean_dairy = text.strip().lower()
+        _dairy_map = {
+            'mozzarella': 'mozzarella cheese',
+            'mozarella': 'mozzarella cheese',
+            'ricotta': 'ricotta cheese',
+            'feta': 'feta cheese',
+            'cream': 'cream cheese',
+        }
+        if _clean_dairy in _dairy_map:
+            return _dairy_map[_clean_dairy]
+
+    # Explicit dairy/cheese overrides
+    if isinstance(text, str):
+        _clean_dairy = text.strip().lower()
+        _dairy_map = {
+            'mozzarella': 'mozzarella cheese',
+            'mozarella': 'mozzarella cheese',
+            'ricotta': 'ricotta cheese',
+            'feta': 'feta cheese',
+            'cream': 'cream cheese',
+        }
+        if _clean_dairy in _dairy_map:
+            return _dairy_map[_clean_dairy]
     if not isinstance(text, str):
         return ""
     # Filter out conversational appendix fragments completely from scraper outputs
@@ -1540,6 +1579,13 @@ def _get_core_ingredient_lookups(singular_fn):
     return _CORE_LOOKUP_CACHE
 
 def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
+
+    # Block cream / cream cheese from matching generic cheese
+    _req_canon = canonical_ingredient_identity(recipe_ingredient) if 'canonical_ingredient_identity' in globals() else ''
+    _user_canons = [canonical_ingredient_identity(i) for i in (user_ingredients or [])] if 'canonical_ingredient_identity' in globals() else []
+    
+    if _req_canon == 'cheese' and 'cream cheese' in _user_canons:
+        return False
 
     original_user_names = [
         clean_word(item)
@@ -10646,3 +10692,25 @@ if __name__ == "__main__":
     app.run(
         debug=False
     )
+
+
+import difflib
+
+def safe_fuzzy_correct(term):
+    if not term or not isinstance(term, str):
+        return term
+    clean = term.strip().lower()
+    known = [
+        'parsley', 'garlic', 'onion', 'ground beef', 'cheddar cheese',
+        'butter', 'milk', 'tomato', 'bell pepper', 'flour', 'rice',
+        'olive oil', 'vegetable oil', 'carrot', 'celery', 'oregano',
+        'thyme', 'basil', 'tomato paste', 'vegetable stock', 'barley',
+        'chicken', 'pork', 'turkey', 'pepper', 'salt', 'spinach',
+        'potato', 'potatoes', 'sweet potato', 'sweet potatoes',
+        'lemon', 'lime', 'cheese', 'egg', 'eggs', 'bacon', 'heavy cream',
+        'mozzarella', 'mozzarella cheese', 'parmesan', 'parmesan cheese',
+        'ricotta', 'cream cheese', 'monterey jack', 'swiss cheese'
+    ]
+    matches = difflib.get_close_matches(clean, known, n=1, cutoff=0.50)
+    return matches[0] if matches else clean
+
