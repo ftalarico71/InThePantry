@@ -342,6 +342,9 @@ def _clean(text: str) -> str:
     text = text.strip().lower()
     text = text.replace("–", "-").replace("—", "-")
     text = text.replace("&", " and ")
+    # Commas in recipe ingredient records usually separate descriptors.
+    # They are not part of the ingredient identity.
+    text = text.replace(",", " ")
     text = re.sub(r"[|;]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
