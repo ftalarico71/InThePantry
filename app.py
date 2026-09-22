@@ -25,7 +25,6 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 RECIPE_CACHE = {}
-# Cache cleared for active sandbox refresh
 # ---------------------------------------------------------
 # PANTRY STAPLES
 # These don't count as ingredients the user needs to buy.
@@ -102,15 +101,6 @@ CORE_INGREDIENTS = {
         "beef short ribs",
         "beef tenderloin",
         "beef sirloin",
-        "beef chuck or round",
-        "beef round",
-        "beef chuck cut into",
-        "beef chuck blocks",
-        "beef broth",
-        "beef stock",
-        "beef bouillon",
-        "beef bouillon cubes",
-        "vegetable or beef broth",
     },
 
     "pork": {
@@ -295,9 +285,22 @@ CORE_INGREDIENTS = {
         "mozzarella cheese",
     },
 
+    "ricotta": {
+        "ricotta",
+        "ricotta cheese",
+    },
+
     "parmesan": {
         "parmesan",
         "parmesan cheese",
+    },
+
+    "cream cheese": {
+        "cream cheese",
+    },
+
+    "half-and-half": {
+        "half-and-half",
     },
 
     # Beans are intentionally different.
@@ -544,6 +547,7 @@ COMMON_INGREDIENTS = {
     "Dairy & Eggs": [
         "eggs",
         "milk",
+        "cheese",
         "butter",
     ],
 
@@ -597,26 +601,14 @@ PASTA_GROUP = {
 }
 
 
-CHEESE_GROUP = {
-    "Cheese": [
-        "cheddar cheese",
-        "mozzarella",
-        "parmesan",
-        "feta cheese",
-        "ricotta cheese",
-        "cream cheese",
-        "cheese",
-    ]
-}
-
 MEAT_GROUPS = {
 
     "Beef": [
         "ground beef",
-        "brisket",
-        "steak",
+        "beef brisket",
+        "beef steak",
         "chuck roast",
-        "stew meat",
+        "beef stew meat",
     ],
 
     "Chicken": [
@@ -670,15 +662,10 @@ MEAT_GROUPS = {
 def clean_word(text):
     if not text:
         return ""
-    # Make sure underscores in half_and_half aren't accidentally removed by punctuation cleaners
-    text = re.sub(r'\bhalf\s+and\s+half\b', 'half_and_half', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bhalf[- ]+and[- ]+half\b', 'half_and_half', text, flags=re.IGNORECASE)
-    if not text:
-        return ""
 
 
     text = text.lower().strip()
-    
+
     text = re.sub(r"\([^)]*\)", "", text)
 
     text = text.replace("-", " ")
@@ -746,49 +733,6 @@ def clean_word(text):
 # ---------------------------------------------------------
 
 def canonical_ingredient_identity(text):
-
-    # Explicit dairy/cheese overrides
-    if isinstance(text, str):
-        _clean_dairy = text.strip().lower()
-        _dairy_map = {
-            'mozzarella': 'mozzarella cheese',
-            'mozarella': 'mozzarella cheese',
-            'ricotta': 'ricotta cheese',
-            'feta': 'feta cheese',
-            'cream': 'cream cheese',
-        }
-        if _clean_dairy in _dairy_map:
-            return _dairy_map[_clean_dairy]
-
-    # Explicit dairy/cheese overrides
-    if isinstance(text, str):
-        _clean_dairy = text.strip().lower()
-        _dairy_map = {
-            'mozzarella': 'mozzarella cheese',
-            'mozarella': 'mozzarella cheese',
-            'ricotta': 'ricotta cheese',
-            'feta': 'feta cheese',
-            'cream': 'cream cheese',
-        }
-        if _clean_dairy in _dairy_map:
-            return _dairy_map[_clean_dairy]
-
-    # Explicit dairy/cheese overrides
-    if isinstance(text, str):
-        _clean_dairy = text.strip().lower()
-        _dairy_map = {
-            'mozzarella': 'mozzarella cheese',
-            'mozarella': 'mozzarella cheese',
-            'ricotta': 'ricotta cheese',
-            'feta': 'feta cheese',
-            'cream': 'cream cheese',
-        }
-        if _clean_dairy in _dairy_map:
-            return _dairy_map[_clean_dairy]
-    if not isinstance(text, str):
-        return ""
-    # Filter out conversational appendix fragments completely from scraper outputs
-    text = re.sub(r'\s*,?\s*\b(?:all\s+one|or\s+individual|all\s+the\s+spice\s+mix|sprinkle\s+at\s+the\s+end|or\s+substitute)\b.*$', '', text, flags=re.IGNORECASE)
     if not isinstance(text, str):
         return ""
 
@@ -888,21 +832,71 @@ def canonical_ingredient_identity(text):
     if re.fullmatch(r"coarse\s+pepper", text, flags=re.IGNORECASE):
         return ""
 
-    # Catch and fix layout phrases like 'swiss or cheese' or 'cheddar or cheese' before the splitter fragments them
-    if re.search(r'\b(swiss|cheddar|mozzarella|parmesan|feta|ricotta|cream)\s+or\s+cheese\b', text, flags=re.IGNORECASE):
-        text = re.sub(r'\b(swiss|cheddar|mozzarella|parmesan|feta|ricotta|cream)\s+or\s+cheese\b', r'\1 cheese', text, flags=re.IGNORECASE)
+    # Scraped measurement/descriptor residue is not an ingredient.
+    # Examples:
+    #   pinches coarse -> ""
+    #   pinch fine -> ""
+    #   dashes coarse -> ""
+    #   handful fine -> ""
+    if re.fullmatch(
+        r"(?:pinch|pinches|dash|dashes|handful|handfuls)\s+"
+        r"(?:coarse|fine|large|small|medium|light|heavy)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return ""
 
     # Handle explicit OR alternatives independently.
     if " or " in text:
         parts = []
+
         for part in re.split(
             r"\s+or\s+",
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         ):
             canonical = canonical_ingredient_identity(part)
             if canonical and canonical not in parts:
                 parts.append(canonical)
+
+        # A generic pasta requirement already covers a named pasta
+        # shape used as the alternative.
+        #
+        # Examples:
+        #   pasta or trottole -> pasta
+        #   pasta or penne    -> pasta
+        #   pasta or rigatoni -> pasta
+        pasta_shapes = {
+            "spaghetti",
+            "penne",
+            "rigatoni",
+            "rotini",
+            "fusilli",
+            "farfalle",
+            "fettuccine",
+            "linguine",
+            "cavatappi",
+            "trottole",
+            "ziti",
+            "macaroni",
+            "orzo",
+            "bucatini",
+            "vermicelli",
+            "lasagna noodles",
+            "bow tie pasta",
+            "elbow macaroni",
+        }
+
+        if (
+            "pasta" in parts
+            and any(
+                part in pasta_shapes
+                for part in parts
+                if part != "pasta"
+            )
+        ):
+            return "pasta"
+
         return " or ".join(parts)
 
     # Pepper-flake products are real ingredients, not pantry-staple
@@ -1325,44 +1319,6 @@ def ingredient_alias(text):
 
     typo_candidates = _get_ingredient_alias_candidates()
 
-    # Protect true ingredient identities from fuzzy typo correction.
-    # A known canonical ingredient must not be silently changed into
-    # another ingredient merely because the names are similar.
-    #
-    # Descriptive vocabulary must still pass through the normal alias
-    # layer, so entries such as "boneless chicken breast" can still
-    # normalize to "chicken breast".
-    known_ingredient_names = set(_get_ingredient_alias_candidates())
-
-    for family_values in CORE_INGREDIENTS.values():
-        known_ingredient_names.update(
-            value.strip().lower()
-            for value in family_values
-            if isinstance(value, str) and value.strip()
-        )
-
-    for category_values in COMMON_INGREDIENTS.values():
-        known_ingredient_names.update(
-            value.strip().lower()
-            for value in category_values
-            if isinstance(value, str) and value.strip()
-        )
-
-    if text in known_ingredient_names:
-        canonical_known = canonical_ingredient_identity(text)
-
-        # Protect only true canonical identities. Descriptive vocabulary
-        # entries must still pass through the normal alias layer.
-        #
-        # Examples:
-        #   tomato                  -> protected as tomato
-        #   potato                  -> protected as potato
-        #   boneless chicken breast -> allowed to normalize to chicken breast
-        #   potatoes                -> allowed to normalize to potato
-        if canonical_known == text:
-            _INGREDIENT_ALIAS_CACHE[raw_text] = text
-            return text
-
     if text not in typo_candidates and text and text != "cracked pepper":
         close = get_close_matches(
             text,
@@ -1438,6 +1394,11 @@ def ingredient_alias(text):
 
         "beef mince": "ground beef",
         "minced beef": "ground beef",
+
+        # Beef chuck roast and chuck roast are the same ingredient
+        # identity for matching purposes.
+        "beef chuck roast": "chuck roast",
+        "chuck roast": "chuck roast",
 
         "fresh garlic": "garlic",
 
@@ -1579,13 +1540,6 @@ def _get_core_ingredient_lookups(singular_fn):
     return _CORE_LOOKUP_CACHE
 
 def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pantry_staple=True):
-
-    # Block cream / cream cheese from matching generic cheese
-    _req_canon = canonical_ingredient_identity(recipe_ingredient) if 'canonical_ingredient_identity' in globals() else ''
-    _user_canons = [canonical_ingredient_identity(i) for i in (user_ingredients or [])] if 'canonical_ingredient_identity' in globals() else []
-    
-    if _req_canon == 'cheese' and 'cream cheese' in _user_canons:
-        return False
 
     original_user_names = [
         clean_word(item)
@@ -2329,7 +2283,6 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     if (
         recipe_core is not None
         and len(recipe_name.split()) == 1
-        and recipe_core not in ["beef", "chicken", "pork", "turkey", "lamb"]
     ):
         for raw_user_item in (user_ingredients or []):
             user_name = clean_word(raw_user_item)
@@ -2341,6 +2294,24 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
             if user_core == recipe_core:
                 return False
+
+    # -----------------------------------------------------
+    # UNIVERSAL DISTINCT-CORE PROTECTION
+    # -----------------------------------------------------
+    # When the entire recipe ingredient already resolves to one
+    # established ingredient core, do not decompose that ingredient
+    # into embedded component cores.
+    #
+    # Examples:
+    #   garlic powder -> garlic powder, NOT garlic + powder
+    #   parmesan      -> parmesan, NOT cheese
+    #
+    # True compound ingredients remain eligible because their full
+    # wording does not itself resolve to one established core.
+    strict_recipe_core = bool(
+        recipe_core
+        and clean_word(recipe_name) == clean_word(recipe_core)
+    )
 
     # -----------------------------------------------------
     # COMPOUND INGREDIENT COMPONENT MATCHING
@@ -2383,7 +2354,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         if term in recipe_name
     }
 
-    if not compound_product:
+    if not compound_product and not strict_recipe_core:
         for core_name, variants in CORE_INGREDIENTS.items():
             core_clean = clean_word(core_name)
 
@@ -2517,10 +2488,6 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
         if compound_component_cores:
             for user_item in user_ingredients or []:
-                # Absolute safety guard: Do NOT let a raw garlic selection fulfill a garlic powder recipe line requirement
-                u_item_low = user_item.lower().strip()
-                if "garlic powder" in recipe_name.lower() and u_item_low == "garlic":
-                    continue
                 user_name = clean_word(user_item)
 
                 if not user_name:
@@ -2742,7 +2709,7 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
 
     meat_parents = {
         "beef": {
-            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "brisket", "whole packer brisket", "packer brisket", "untrimmed brisket", "beef shank", "beef chuck or round", "beef round", "beef chuck cut into", "beef chuck blocks",
+            "beef", "beef chuck", "beef chuck roast", "chuck roast", "beef brisket", "brisket", "whole packer brisket", "packer brisket", "untrimmed brisket", "beef shank",
             "beef steak", "beef roast", "roast beef", "beef stew meat",
             "beef short ribs", "beef tenderloin", "beef sirloin",
             "steak", "ribeye", "ribeyes", "rib eye", "rib eyes",
@@ -2902,23 +2869,10 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
     })
 
     def resolve_meat_parent(name):
+        """Resolve an exact meat variant or descriptive steak to its animal parent."""
         name = clean_word(name)
         if not name:
             return None
-        name_lower = name.lower()
-        if "beef" in name_lower or "steak" in name_lower or "chuck" in name_lower or "stew meat" in name_lower:
-            return "beef"
-        if "chicken" in name_lower:
-            return "chicken"
-        if "pork" in name_lower:
-            return "pork"
-        if "turkey" in name_lower:
-            return "turkey"
-        if "lamb" in name_lower:
-            return "lamb"
-            
-        if name.startswith("beef chuck") or name.startswith("beef round"):
-            return "beef" 
 
         name = ingredient_alias(name)
         name = clean_word(name)
@@ -3409,49 +3363,17 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
             # This does NOT make different beef cuts interchangeable.
             # Ground/non-ground protection remains authoritative below.
             # -------------------------------------------------
-            def specific_meat_base(name):
-                name = clean_word(name)
-                if not name:
-                    return None
-
-                if is_ground_meat(name):
-                    return None
-
-                parent = resolve_meat_parent(name)
-                if not parent:
-                    return None
-
-                # A bare animal name is the generic meat identity,
-                # not a specific cut.
-                if name == parent:
-                    return None
-
-                # A specific cut may be written with or without the
-                # animal prefix. Normalize only that optional prefix.
-                #
-                # beef chuck roast -> chuck roast
-                # chuck roast      -> chuck roast
-                #
-                # Do not turn generic "beef" into a specific cut, and
-                # do not make different cuts interchangeable.
-                base = name
-                prefix = f"{parent} "
-
-                if base.startswith(prefix):
-                    base = base[len(prefix):].strip()
-
-                if not base or base == parent:
-                    return None
-
-                return singular(base)
-
-            recipe_specific_base = specific_meat_base(recipe_name)
-            user_specific_base = specific_meat_base(user_name)
+            brisket_variants = {
+                "beef brisket",
+                "brisket",
+                "whole packer brisket",
+                "packer brisket",
+                "untrimmed brisket",
+            }
 
             if (
-                recipe_specific_base
-                and user_specific_base
-                and recipe_specific_base == user_specific_base
+                original_recipe_name in brisket_variants
+                and original_user_name in brisket_variants
             ):
                 return True
 
@@ -4066,18 +3988,11 @@ def get_sensible_substitutions(ingredient):
 def user_facing_ingredient_identity(text):
     """
     Final UI-only ingredient cleanup.
+
+    The matching engine keeps meaningful internal distinctions.
+    This layer removes recipe-source wording that is not part of
+    the ingredient identity shown to the user.
     """
-    if not text:
-        return ""
-    # Make sure specific, valuable sub-cuts keep their identity in the UI
-    t_low = text.lower()
-    if "chuck" in t_low or "roast" in t_low:
-        if "chuck" in t_low and "roast" in t_low: return "chuck roast"
-        if "chuck" in t_low: return "chuck roast"
-    if "stew meat" in t_low:
-        return "stew meat"
-    if "brisket" in t_low:
-        return "brisket" 
     if not isinstance(text, str):
         return ""
 
@@ -4108,25 +4023,10 @@ def user_facing_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
-    if "juice " in value.lower() or "zest " in value.lower():
-        value = value.replace("juice ", "").replace("zest ", "").strip()
-    
-    # Global Citrus Consolidation: Collapse 'lemon juice', 'lemon zest', 'lime juice', etc. down to the baseline fruit
-    if "lemon juice" in value.lower() or "lemon zest" in value.lower():
-        value = "lemon"
-    if "lime juice" in value.lower() or "lime zest" in value.lower():
-        value = "lime" 
-    
-    # Strip trailing scraper fragment clutter and prefix verbs like 'squeezed' or conversational remnants
-    value = re.sub(r'(?i)\b(?:squeezed|freshly\s+squeezed)\s+', '', value)
-    value = re.sub(r'(?i)\s*,?\s*\b(?:or\s+individual\s+skin|or\s+individual|all\s+one|or\s+herb\s+you)\b.*$', '', value)
-    value = value.strip()
-
     # User-facing ingredient identity is singular where the plural
     # adds no ingredient distinction.
     if value.strip().lower() == "steaks":
         value = "steak"
-    if value.lower() == "half_and_half": return "half and half"
 
     # Remove scraped measurement abbreviations that can survive
     # earlier normalization when they appear directly before an
@@ -4582,11 +4482,7 @@ def match_recipe_to_pantry(recipe, pantry_items):
     # -----------------------------------------------------
 
     def matches(recipe_name):
-        # FIX: Normalize brisket and generic oil matching vocabulary
-        r_clean = recipe_name.lower().strip()
-        if "brisket" in r_clean: recipe_name = "brisket"
-        if r_clean == "oil" or "oil or similar" in r_clean:
-            if any("oil" in str(item).lower() for item in pantry_items or []): return True        # Salt and pepper are basic pantry staples.
+        # Salt and pepper are basic pantry staples.
         if (
             "salt" in recipe_name
             and "pepper" in recipe_name
@@ -4958,26 +4854,7 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
         # Skip standard pantry staples entirely from having or missing counts
         # Force combined staple and spice strings to separate cleanly from total scores
-        # Absolute normalization shortcut for core meat sub-cuts before matching evaluation
-        eval_name = name.lower()
-        if "beef chuck" in eval_name or "beef round" in eval_name or "beef stew meat" in eval_name:
-            if "beef" in pantry or any("beef" in item for item in pantry):
-                name = "beef"
-
-        # If the recipe requires a generic animal parent, check if the user has ANY variant of that animal in their pantry
-        eval_name = name.lower().strip()
-        protein_matched = False
-        
-        # FIX: Blocks flavorings/liquids from matching raw proteins
-        is_flavoring = any(w in eval_name for w in ["broth", "stock", "base", "bouillon", "cube", "seasoning"])
-
-        if not is_flavoring and any(p in eval_name for p in ["beef", "chicken", "pork", "turkey", "lamb"]):
-            for p in ["beef", "chicken", "pork", "turkey", "lamb"]:
-                if p in eval_name:
-                    if any(p in item.lower() for item in pantry_items or []):
-                        protein_matched = True
-                        break
-        if matches(name) or contextual_match or protein_matched:
+        if matches(name) or contextual_match:
             display_name = user_facing_ingredient_identity(name)
             if display_name:
                 have.append({
@@ -5063,8 +4940,58 @@ def search_web_recipes(user_ingredients, count=10):
     if not ingredients:
         return []
 
-    # Full-pantry search plus extra protein-specific queries if multiple proteins.
-    queries = [" ".join(ingredients) + " recipe"]
+    # Full-pantry search plus broader fallback queries for a single
+    # ingredient. A single checkbox such as "cream cheese", "ricotta",
+    # or "mozzarella" should not depend on one exact search phrase.
+    if len(ingredients) == 1:
+        ingredient_query = ingredients[0]
+
+        queries = [
+            ingredient_query + " recipe",
+            ingredient_query + " recipes",
+            "recipes with " + ingredient_query,
+        ]
+    else:
+        queries = [" ".join(ingredients) + " recipe"]
+
+    # Specific cheese selections must drive recipe discovery.
+    # This overrides only the search query for cheese selections;
+    # all existing non-cheese query behavior remains unchanged.
+    specific_cheese_terms = {
+        "cheddar",
+        "cheddar cheese",
+        "mozzarella",
+        "mozzarella cheese",
+        "parmesan",
+        "parmesan cheese",
+        "ricotta",
+        "ricotta cheese",
+        "feta",
+        "feta cheese",
+        "cream cheese",
+        "cottage cheese",
+        "colby jack",
+        "colby jack cheese",
+        "monterey jack",
+        "monterey jack cheese",
+        "swiss cheese",
+        "provolone",
+        "provolone cheese",
+        "gouda",
+        "gouda cheese",
+    }
+
+    selected_cheese = next(
+        (
+            ingredient
+            for ingredient in ingredients
+            if ingredient in specific_cheese_terms
+        ),
+        None,
+    )
+
+    if selected_cheese:
+        queries = ["recipes with " + selected_cheese]
 
     selected_protein_terms = []
     for item in ingredients:
@@ -5435,16 +5362,6 @@ def clean_recipe_ingredient_metadata(text):
         text,
         flags=re.IGNORECASE,
     )
-    # Global Branding & Editorial Clipping (e.g. 'such as mae ploy', 'paleo use t', 'a or less')
-    text = re.sub(r'(?i)\s*,?\s*\b(?:such\s+as\s+[a-z\s]+|paleo\s+use\s+[a-z\s]*|a\s+or\s+less|or\s+yellow|or\s+light\s+soy)\b', '', text)
-    # Filter out multi-or wine commentary and preparation descriptor noise
-    text = re.sub(r'(?i)\s+or\s+port\s+is\s+good\s+or\s+beef\s+broth\b', ' or beef broth', text)
-    text = re.sub(r'(?i)\b(?:unpeeled|peeled|finely\s+grated|batch|toppings)\b', '', text)
-    
-    # Protect 'half-and-half' from getting split into a single fragment word before punctuation stripping
-    text = re.sub(r'\bhalf[- ]+and[- ]+half\b', 'half_and_half', text, flags=re.IGNORECASE)
-    # Mute dangling brand remains like 'lawry s'
-    text = re.sub(r'\blawry\s+s\b', 'seasoned salt', text, flags=re.IGNORECASE)
 
     # Common editorial prefixes.
     text = re.sub(
@@ -5585,10 +5502,8 @@ def clean_recipe_ingredient_metadata(text):
     # After removing the first measurement, the second one must also be
     # removed rather than becoming part of the ingredient identity.
     previous = None
-    loop_guard_1 = 0
-    while text != previous and loop_guard_1 < 20:
+    while text != previous:
         previous = text
-        loop_guard_1 += 1
 
         text = re.sub(
             rf"^\s*{measurement_range}\s*",
@@ -5636,10 +5551,26 @@ def normalize_recipe_ingredient(text, preserve_source=False):
     if not text:
         return '', []
 
+    # Protect half-and-half before metadata cleanup can split or
+    # otherwise collapse the compound ingredient.
+    if isinstance(text, str):
+        half_check = text.strip().lower().replace("-", " ")
+        if "half and half" in half_check:
+            return "half-and-half", []
+
     text = clean_recipe_ingredient_metadata(text)
 
     if not text:
         return '', []
+
+    # Protect half-and-half before any later "and" splitting or
+    # grammatical cleanup can turn it into "half".
+    if re.fullmatch(
+        r"half[-\s]+and[-\s]+half",
+        text.strip(),
+        flags=re.IGNORECASE,
+    ):
+        return "half-and-half", []
 
     text = text.lower().strip()
 
@@ -5750,7 +5681,7 @@ def normalize_recipe_ingredient(text, preserve_source=False):
         return '', []
 
     # Treat common ingredient separators as separate items.
-    
+
     # Surgically separate bundled spices and staples with clean structural commas
     if 'sweet paprika' in text and 'salt and pepper' in text:
         text = text.replace('sweet paprika', 'sweet paprika,').replace('each ', '')
@@ -5821,8 +5752,6 @@ def normalize_recipe_ingredient(text, preserve_source=False):
         if alternative:
             alternatives.append(alternative)
 
-    text = re.sub(r'\s+or\s+(?:two|three|four|more|less|pieces|sliced|chopped)', '', text, flags=re.IGNORECASE)
-    
     # Capture the primary side before a comma-delimited OR.
     comma_or_match = re.search(
         r'^(.*?)\s*,\s*or\s+(.+?)\s*$',
@@ -6107,10 +6036,6 @@ def normalize_recipe_ingredient(text, preserve_source=False):
 
     # Reduce descriptive meat preparation wording to the actual cut.
     text = re.sub(r'\bcenter\s+cut\s+(pork\s+loin)\b.*', r'\1', text)
-    
-    # Force collapse complex web variations of soy sauce down to a clean singular ingredient representation
-    if "soy sauce" in text or "light soy" in text:
-        text = "soy sauce" 
 
     # Remove trailing bone/skin preparation wording after the ingredient identity.
     # Examples: "chicken breasts, bone and skin on" -> "chicken breasts"
@@ -6401,9 +6326,13 @@ def _extract_ingredient_identity_base(text):
     # -------------------------------------------------------------
     # EXPLICIT OR ALTERNATIVES
     # -------------------------------------------------------------
-    # The caller normally handles these, but keep this helper safe when
-    # called directly.
-    if re.search(r"\s+(?:or|alternatively)\s+", text, re.IGNORECASE):
+    # Resolve explicit alternatives while preserving the application's
+    # established ingredient identities.
+    if re.search(
+        r"\s+(?:or|alternatively)\s+",
+        text,
+        flags=re.IGNORECASE,
+    ):
         parts = re.split(
             r"\s+(?:or|alternatively)\s+",
             text,
@@ -6411,10 +6340,59 @@ def _extract_ingredient_identity_base(text):
         )
 
         identities = []
+
         for part in parts:
             identity = extract_ingredient_identity(part)
             if identity and identity not in identities:
                 identities.append(identity)
+
+        # A generic pasta identity covers a named pasta shape used as
+        # its alternative. The shape itself is not a second ingredient.
+        pasta_shapes = {
+            "spaghetti",
+            "penne",
+            "rigatoni",
+            "rotini",
+            "fusilli",
+            "farfalle",
+            "fettuccine",
+            "linguine",
+            "cavatappi",
+            "trottole",
+            "ziti",
+            "macaroni",
+            "orzo",
+            "bucatini",
+            "vermicelli",
+            "ditalini",
+            "orecchiette",
+            "ravioli",
+            "tortellini",
+            "lasagna noodles",
+            "bow tie pasta",
+            "elbow macaroni",
+        }
+
+        normalized_parts = [
+            part.strip().lower()
+            for part in parts
+            if part.strip()
+        ]
+
+        if (
+            "pasta" in identities
+            and any(
+                part in pasta_shapes
+                or re.search(
+                    r"\b(?:pasta|noodles?)\b",
+                    part,
+                    flags=re.IGNORECASE,
+                )
+                for part in normalized_parts
+                if part != "pasta"
+            )
+        ):
+            return "pasta"
 
         return " or ".join(identities)
 
@@ -6506,6 +6484,8 @@ def _extract_ingredient_identity_base(text):
         r"handfuls?|cloves?|heads?|"
         r"bunches?|pieces?|sticks?|"
         r"cans?|packages?|packs?|"
+        r"pints?|quarts?|"
+        r"drops?|bulbs?|"
         r"slices?|sprigs?|stalks?|"
         r"servings?|portions?"
         r"))?"
@@ -6514,10 +6494,8 @@ def _extract_ingredient_identity_base(text):
     )
 
     previous = None
-    loop_guard_1 = 0
-    while text != previous and loop_guard_1 < 20:
+    while text != previous:
         previous = text
-        loop_guard_1 += 1
         text = quantity.sub("", text, count=1).strip()
 
     # Remove standalone unit/package prefixes that can survive malformed
@@ -6529,7 +6507,9 @@ def _extract_ingredient_identity_base(text):
         r"g|gram|grams|"
         r"kg|kilogram|kilograms|"
         r"ml|milliliter|milliliters|"
-        r"l|liter|liters|litre|litres"
+        r"l|liter|liters|litre|litres|"
+        r"pint|pints|quart|quarts|"
+        r"drop|drops|bulb|bulbs"
         r")\s+",
         "",
         text,
@@ -6651,6 +6631,20 @@ def _extract_ingredient_identity_base(text):
                 return " and/or ".join(
                     dict.fromkeys(resolved_pieces)
                 )
+
+    # -------------------------------------------------------------
+    # PROTECT HALF-AND-HALF
+    # -------------------------------------------------------------
+    # Hyphen normalization can turn "half-and-half" into
+    # "half and half". That phrase is one ingredient and must
+    # never be split by the generic "and" handling later.
+    # -------------------------------------------------------------
+    if re.fullmatch(
+        r"half[-\s]+and[-\s]+half",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "half-and-half"
 
     # -------------------------------------------------------------
     # INGREDIENT BOUNDARY
@@ -6824,6 +6818,85 @@ def _extract_ingredient_identity_base(text):
     #   vegetable oil      -> vegetable oil
     #   red pepper flakes  -> red pepper flakes
     # -------------------------------------------------------------
+    # -------------------------------------------------------------
+    # AUTHORITATIVE SPECIFIC-CHEESE PROTECTION
+    # -------------------------------------------------------------
+    # Preserve a specific cheese identity before the generic "cheese"
+    # identity can win.
+    #
+    # Generic:
+    #   cheese -> cheese
+    #
+    # Specific:
+    #   cheddar cheese           -> cheddar cheese
+    #   mozzarella cheese        -> mozzarella cheese
+    #   ricotta cheese           -> ricotta cheese
+    #   feta cheese              -> feta cheese
+    #   goat cheese              -> goat cheese
+    #   blue cheese              -> blue cheese
+    #   Parmigiano Reggiano      -> Parmesan cheese
+    #
+    # This is part of the authoritative extractor, so downstream
+    # matching receives the actual specific ingredient identity.
+    _specific_cheese_patterns = [
+        (r"\bparmigiano\s+reggiano(?:\s+cheese)?\b", "Parmesan cheese"),
+        (r"\bparmesan(?:\s+cheese)?\b", "Parmesan cheese"),
+        (r"\bcheddar(?:\s+cheese)?\b", "cheddar cheese"),
+        (r"\bmozzarella(?:\s+cheese)?\b", "mozzarella cheese"),
+        (r"\bfeta(?:\s+cheese)?\b", "feta cheese"),
+        (r"\bricotta(?:\s+cheese)?\b", "ricotta cheese"),
+        (r"\bgoat\s+cheese\b", "goat cheese"),
+        (r"\bblue\s+cheese\b", "blue cheese"),
+        (r"\bcottage\s+cheese\b", "cottage cheese"),
+        (r"\bcream\s+cheese\b", "cream cheese"),
+        (r"\bbrie(?:\s+cheese)?\b", "brie cheese"),
+        (r"\bcamembert(?:\s+cheese)?\b", "camembert cheese"),
+        (r"\bgruyere(?:\s+cheese)?\b", "gruyere cheese"),
+        (r"\bfontina(?:\s+cheese)?\b", "fontina cheese"),
+        (r"\bhavarti(?:\s+cheese)?\b", "havarti cheese"),
+        (r"\basiago(?:\s+cheese)?\b", "asiago cheese"),
+        (r"\bprovolone(?:\s+cheese)?\b", "provolone cheese"),
+        (r"\bgouda(?:\s+cheese)?\b", "gouda cheese"),
+        (r"\bswiss\s+cheese\b", "swiss cheese"),
+        (r"\bpepper\s+jack(?:\s+cheese)?\b", "pepper jack cheese"),
+        (r"\bmascarpone(?:\s+cheese)?\b", "mascarpone cheese"),
+        (r"\bpecorino\s+romano(?:\s+cheese)?\b", "pecorino romano"),
+    ]
+
+    for _cheese_pattern, _cheese_identity in _specific_cheese_patterns:
+        if re.search(
+            _cheese_pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return _cheese_identity
+
+    # Reject standalone scraper metadata after all quantity and unit
+    # cleanup has completed.
+    #
+    # Examples:
+    #   pinch fine      -> ""
+    #   handful fine    -> ""
+    #   pinches coarse  -> ""
+    #   coarse          -> ""
+    #
+    # These words describe quantity, texture, or preparation metadata;
+    # they are never ingredient identities on their own.
+    orphan_metadata = {
+        "fine",
+        "coarse",
+        "large",
+        "medium",
+        "small",
+        "light",
+        "heavy",
+        "heaping",
+        "scant",
+    }
+
+    if text in orphan_metadata:
+        return ""
+
     exact_matches = [
         ingredient
         for ingredient in known
@@ -7062,7 +7135,94 @@ def extract_ingredient_identity(text):
     is designed for ingredient identities, not arbitrary scraped source
     text.
     """
+    # Protect half-and-half before the extractor/canonicalizer can
+    # interpret the word "and" as an ingredient separator.
+    if isinstance(text, str):
+        half_check = text.strip().lower().replace("-", " ")
+        if "half and half" in half_check:
+            return "half-and-half"
+
     result = _extract_ingredient_identity_base(text)
+
+    # Final universal guard against scraper metadata becoming an ingredient identity.
+
+    orphan_metadata = {
+
+        "fine",
+
+        "coarse",
+
+        "large",
+
+        "medium",
+
+        "small",
+
+        "light",
+
+        "heavy",
+
+        "heaping",
+
+        "scant",
+
+    }
+
+
+
+    if result.strip().lower() in orphan_metadata:
+
+        return ""
+
+    # Universal specific-cheese protection.
+    #
+    # If the base extractor fell back to generic "cheese", inspect the
+    # original source wording before accepting that generic identity.
+    # A recipe that actually names a specific cheese must keep that
+    # specific identity.
+    #
+    # Examples:
+    #   Parmigiano Reggiano cheese -> Parmesan cheese
+    #   goat cheese               -> goat cheese
+    #   cheddar cheese            -> cheddar cheese
+    #   generic cheese            -> cheese
+    #
+    # This runs only when the base result is generic "cheese", so
+    # already-correct specific cheese identities are left unchanged.
+    if result == "cheese" and isinstance(text, str):
+        _specific_cheese_patterns = [
+            (r"\\bparmigiano(?:\\s+reggiano)?(?:\\s+cheese)?\\b", "Parmesan cheese"),
+            (r"\\bparmesan\\s+cheese\\b", "Parmesan cheese"),
+            (r"\\bcheddar(?:\\s+cheese)?\\b", "cheddar cheese"),
+            (r"\\bmozzarella(?:\\s+cheese)?\\b", "mozzarella cheese"),
+            (r"\\bfeta(?:\\s+cheese)?\\b", "feta cheese"),
+            (r"\\bricotta(?:\\s+cheese)?\\b", "ricotta cheese"),
+            (r"\\bcream\\s+cheese\\b", "cream cheese"),
+            (r"\\bcottage\\s+cheese\\b", "cottage cheese"),
+            (r"\\bcolby[- ]jack(?:\\s+cheese)?\\b", "colby jack cheese"),
+            (r"\\bmonterey\\s+jack(?:\\s+cheese)?\\b", "monterey jack cheese"),
+            (r"\\bswiss(?:\\s+cheese)?\\b", "swiss cheese"),
+            (r"\\bprovolone(?:\\s+cheese)?\\b", "provolone cheese"),
+            (r"\\bgouda(?:\\s+cheese)?\\b", "gouda cheese"),
+            (r"\\basiago(?:\\s+cheese)?\\b", "asiago cheese"),
+            (r"\\bbrie(?:\\s+cheese)?\\b", "brie cheese"),
+            (r"\\bcamembert(?:\\s+cheese)?\\b", "camembert cheese"),
+            (r"\\bblue\\s+cheese\\b", "blue cheese"),
+            (r"\\bgoat\\s+cheese\\b", "goat cheese"),
+            (r"\\bgruyere(?:\\s+cheese)?\\b", "gruyere cheese"),
+            (r"\\bfontina(?:\\s+cheese)?\\b", "fontina cheese"),
+            (r"\\bhavarti(?:\\s+cheese)?\\b", "havarti cheese"),
+            (r"\\bpepper\\s+jack(?:\\s+cheese)?\\b", "pepper jack cheese"),
+            (r"\\bmascarpone(?:\\s+cheese)?\\b", "mascarpone cheese"),
+            (r"\\bpecorino\\s+romano(?:\\s+cheese)?\\b", "pecorino romano"),
+        ]
+
+        _source_lower = text.lower()
+
+        for _pattern, _identity in _specific_cheese_patterns:
+            if re.search(_pattern, _source_lower):
+                result = _identity
+                break
 
     if not result:
         return ""
@@ -7790,7 +7950,7 @@ def convert_measurement(measure):
     def liter_to_cups(match):
         liters = float(match.group(1))
         cups = liters * 4.22675
-        return f"{cups:.1f} cups"    
+        return f"{cups:.1f} cups"
 
     text = re.sub(
         r"(\d+(?:\.\d+)?)\s*(?:g|grams?)\b",
@@ -8243,8 +8403,6 @@ def find_recipes(
         return []
 
     scored_recipes = []
-    # Track core keywords in recipe titles to completely prevent duplicate recipe types from stacking
-    seen_recipe_clusters = set()
 
     # Identify specifically selected proteins so recipes using
     # the user's chosen meat are ranked ahead of recipes that
@@ -8649,13 +8807,7 @@ def find_recipes(
                 item.get("ingredient", "")
             )
 
-            # Prevent duplication loops (like olive oil and generic oil surfacing simultaneously)
-            if identity and identity not in matched:
-                # Deduplicate multi-word oil entries cleanly (e.g., if you have vegetable oil, don't output generic 'oil')
-                if identity == "oil" and ("olive oil" in matched or "vegetable oil" in matched):
-                    continue
-                if identity == "vegetable oil" and "oil" in matched:
-                    matched.remove("oil")
+            if identity:
                 matched.append(identity)
 
         missing_items = pantry_result.get(
@@ -8670,19 +8822,8 @@ def find_recipes(
                 item.get("ingredient", "")
             )
 
-            if identity and identity not in missing:
-                if identity.lower() == "sesame":
-                    identity = "sesame seeds" 
-                # Prevent sub-string variations of soy sauce or chiles from duplication clutter
-                if identity == "soy sauce" and any("soy" in x for x in missing):
-                    continue
+            if identity:
                 missing.append(identity)
-                
-        # Global Citrus Consolidation: If 'lime juice' or 'lemon juice' leaks onto the list alongside the raw fruit, clean it up
-        if "lime" in missing and "lime juice" in missing:
-            missing.remove("lime juice")
-        if "lemon" in missing and "lemon juice" in missing:
-            missing.remove("lemon juice")
 
         # Build the substitution display used by
         # the existing webpage.
@@ -8771,19 +8912,6 @@ def find_recipes(
         # Some extractors return a list of images.
         if isinstance(image, list):
             image = image[0] if image else None
-
-        # Algorithmic Variety Filter: Extract core naming keywords from the recipe title
-        recipe_title_raw = recipe.get("name", result.get("title", "Recipe")).lower()
-        # Clean title to get core variations (e.g., 'garlic butter chicken' becomes 'garlic_butter_chicken')
-        title_words = re.findall(r'\b(garlic|butter|fried|stew|soup|curry|parmesan|creamy|alfredo|marsala|piccata|stir|fry|roasted|baked|rice|risotto)\b', recipe_title_raw)
-        title_cluster_key = "_".join(sorted(list(set(title_words))))
-        
-        # If we have already captured 2 variations of this specific type of recipe, skip the rest to force diversity
-        if title_cluster_key and len(title_cluster_key) > 3:
-            if list(seen_recipe_clusters).count(title_cluster_key) >= 2:
-                print(f"FORCING VARIETY: Skipping duplicate recipe type: {recipe_title_raw}")
-                continue
-            seen_recipe_clusters.add(title_cluster_key)
 
         scored_recipes.append({
             "name": recipe.get(
@@ -9130,6 +9258,63 @@ HTML = """
     color: #4d5e8a;
 }
 
+/* Subcategories use the same color as their parent category. */
+.ingredient-category.category-color-1 + .category-grid .meat-group,
+.ingredient-category.category-color-1 + .category-grid .meat-group:hover {
+    border-left-color: #d96b5f;
+    background: #fff7f5;
+    color: #8f352c;
+}
+
+.ingredient-category.category-color-2 + .category-grid .meat-group,
+.ingredient-category.category-color-2 + .category-grid .meat-group:hover {
+    border-left-color: #5b9b6d;
+    background: #f5fbf6;
+    color: #356a43;
+}
+
+.ingredient-category.category-color-3 + .category-grid .meat-group,
+.ingredient-category.category-color-3 + .category-grid .meat-group:hover {
+    border-left-color: #d6a64f;
+    background: #fffbf2;
+    color: #86621e;
+}
+
+.ingredient-category.category-color-4 + .category-grid .meat-group,
+.ingredient-category.category-color-4 + .category-grid .meat-group:hover {
+    border-left-color: #5c8fc7;
+    background: #f5f9fe;
+    color: #315f8d;
+}
+
+.ingredient-category.category-color-5 + .category-grid .meat-group,
+.ingredient-category.category-color-5 + .category-grid .meat-group:hover {
+    border-left-color: #9a75b5;
+    background: #faf7fc;
+    color: #694681;
+}
+
+.ingredient-category.category-color-6 + .category-grid .meat-group,
+.ingredient-category.category-color-6 + .category-grid .meat-group:hover {
+    border-left-color: #d17b43;
+    background: #fff8f2;
+    color: #8a4c25;
+}
+
+.ingredient-category.category-color-7 + .category-grid .meat-group,
+.ingredient-category.category-color-7 + .category-grid .meat-group:hover {
+    border-left-color: #4e9c9a;
+    background: #f3fbfb;
+    color: #286967;
+}
+
+.ingredient-category.category-color-8 + .category-grid .meat-group,
+.ingredient-category.category-color-8 + .category-grid .meat-group:hover {
+    border-left-color: #7d8fbd;
+    background: #f6f8fd;
+    color: #4d5e8a;
+}
+
 .category-arrow {
     color: #333;
     font-size: 14px;
@@ -9242,7 +9427,7 @@ HTML = """
             color: #c5221f;
             background: #fce8e6;
         }
-        
+
         .best-match {
             display: inline-block;
             color: #8a5a00;
@@ -9308,7 +9493,7 @@ HTML = """
             color: #b00020;
         }
 
-    
+
     .sound-control {
         display: flex;
         justify-content: center;
@@ -9860,7 +10045,7 @@ document.addEventListener("DOMContentLoaded", function () {
         <h3>What do you already have?</h3>
         <p class="ingredient-help">Quick selections are general categories. For more accurate recipe matches, select the specific ingredient you have when available, or enter it manually. For example, "Cheese" is less specific than "Cheddar Cheese."</p>
 
-        
+
 {% for category, ingredients in common_ingredients.items() %}
 
     <button
@@ -9880,8 +10065,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 <button
                     type="button"
-                    class="ingredient-category meat-group category-color-1"
-                    style="border-left: 6px solid #d96b5f; background: #fff7f5; color: #8f352c; margin-top: 5px; margin-bottom: 5px;"
+                    class="ingredient-category meat-group"
                     onclick="toggleIngredientCategory(this)"
                 >
                     <span>{{ meat_group }}</span>
@@ -9915,11 +10099,10 @@ document.addEventListener("DOMContentLoaded", function () {
 
             <button
                 type="button"
-                class="ingredient-category meat-group category-color-4"
-                style="border-left: 6px solid #5c8fc7; background: #f5f9fe; color: #315f8d; margin-top: 5px; margin-bottom: 5px;"
+                class="ingredient-category meat-group"
                 onclick="toggleIngredientCategory(this)"
             >
-                <span>Pasta Varieties</span>
+                <span>Pasta</span>
                 <span class="category-arrow">▶</span>
             </button>
 
@@ -9965,6 +10148,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
             {% endfor %}
 
+
         {% elif category == "Dairy & Eggs" %}
 
             <button
@@ -9978,77 +10162,59 @@ document.addEventListener("DOMContentLoaded", function () {
             </button>
 
             <div class="ingredient-grid category-grid">
-                {% for ingredient in ["cheddar cheese", "mozzarella", "parmesan", "feta cheese", "ricotta cheese", "cream cheese", "cheese"] %}
+
+                {% for ingredient in [
+                    "cheddar cheese",
+                    "mozzarella",
+                    "parmesan",
+                    "feta cheese",
+                    "ricotta cheese",
+                    "cream cheese",
+                    "cheese"
+                ] %}
+
                     <label class="ingredient-option">
+
                         <input
                             type="checkbox"
                             name="common_ingredients"
                             value="{{ ingredient }}"
                             {% if ingredient in selected_common %}checked{% endif %}
                         >
-                        {# Strip the repetitive 'cheese' word suffix cleanly on front-end checkbox labels #}
+
                         {% if ingredient == "cheese" %}
-                            <span id="other-cheese-label">Other Cheese</span>
-                            <script>
-                                document.addEventListener("DOMContentLoaded", function() {
-                                    const cb = document.querySelector('input[value="cheese"]');
-                                    if (cb && !cb.dataset.promptBound) {
-                                        cb.dataset.promptBound = "true";
-                                        cb.addEventListener("change", function() {
-                                            const customInput = document.querySelector('input[name="ingredients"]');
-                                            if (this.checked) {
-                                                let specificCheese = prompt("What type of other cheese do you have? (e.g., Gouda, Swiss, Provolone):");
-                                                if (specificCheese && specificCheese.trim()) {
-                                                    specificCheese = specificCheese.trim();
-                                                    // Ensure we cleanly attach the word 'cheese' if the user omitted it
-                                                    if (!specificCheese.toLowerCase().includes("cheese")) {
-                                                        specificCheese += " Cheese";
-                                                    }
-                                                    this.dataset.customCheeseValue = specificCheese;
-                                                    
-                                                    if (customInput) {
-                                                        let currentVal = customInput.value.trim();
-                                                        if (currentVal) {
-                                                            if (!currentVal.endsWith(",")) currentVal += ",";
-                                                            customInput.value = currentVal + " " + specificCheese;
-                                                        } else {
-                                                            customInput.value = specificCheese;
-                                                        }
-                                                    }
-                                                } else {
-                                                    // Uncheck if the user hits cancel or types nothing
-                                                    this.checked = false;
-                                                }
-                                            } else {
-                                                // If they uncheck it, safely clear out that specific cheese string from the input field
-                                                if (customInput && this.dataset.customCheeseValue) {
-                                                    const removeVal = this.dataset.customCheeseValue;
-                                                    let currentVal = customInput.value;
-                                                    let regex = new RegExp(',?\\s*' + removeVal.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
-                                                    customInput.value = currentVal.replace(regex, '').replace(/^\s*,\s*/, '').trim();
-                                                }
-                                            }
-                                        });
-                                    }
-                                });
-                            </script>
+                            Other Cheese
+                        {% elif ingredient == "cream cheese" %}
+                            Cream Cheese
                         {% else %}
                             {{ ingredient.replace(" cheese", "")|title }}
                         {% endif %}
+
                     </label>
+
                 {% endfor %}
+
             </div>
 
             {% for ingredient in ingredients %}
-                <label class="ingredient-option">
-                    <input
-                        type="checkbox"
-                        name="common_ingredients"
-                        value="{{ ingredient }}"
-                        {% if ingredient in selected_common %}checked{% endif %}
-                    >
-                    {{ ingredient|title }}
-                </label>
+
+                {% if ingredient != "cheese" %}
+
+                    <label class="ingredient-option">
+
+                        <input
+                            type="checkbox"
+                            name="common_ingredients"
+                            value="{{ ingredient }}"
+                            {% if ingredient in selected_common %}checked{% endif %}
+                        >
+
+                        {{ ingredient|title }}
+
+                    </label>
+
+                {% endif %}
+
             {% endfor %}
 
         {% else %}
@@ -10082,7 +10248,7 @@ document.addEventListener("DOMContentLoaded", function () {
         placeholder="Or add other ingredients: chicken, rice, broccoli"
         value="{{ entered }}"
     >
-        
+
         <div style="display: flex; gap: 15px; margin-top: 15px; margin-bottom: 20px;">
             <div style="flex: 1;">
                 <label style="display: block; font-weight: bold; margin-bottom: 6px; color: #333; font-size: 14px;">Diet & Style</label>
@@ -10370,7 +10536,7 @@ document.addEventListener("DOMContentLoaded", function () {
                         </div>
 
                     </div>
-                    
+
                     {% if recipe.source %}
 
                         <a
@@ -10478,7 +10644,7 @@ def home():
 
                 if ingredient.strip()
             ]
- 
+
             user_ingredients.extend(
                 selected_common
             )
@@ -10487,34 +10653,10 @@ def home():
                 canonical_ingredient_identity(item)
                 for item in user_ingredients
             ]
-            
-            # Map bare generic 'beef' tokens inside the final matching display results array back to what the user checked
-            pantry_cuts = [x.lower() for x in selected_common or []] + entered.lower().split(",")
-            chosen_cut = "beef"
-            for cut in ["chuck roast", "stew meat", "brisket", "ground beef", "steak"]:
-                if any(cut in item for item in pantry_cuts):
-                    chosen_cut = cut
-                    break
-            
-            if recipes:
-                for r in recipes:
-                    if "matched" in r:
-                        r["matched"] = [chosen_cut if x.lower() == "beef" else x for x in r["matched"]]
 
             user_ingredients = [
                 item
                 for item in user_ingredients
-                if item
-            ]
-
-            selected_common = [
-                canonical_ingredient_identity(item)
-                for item in selected_common
-            ]
-
-            selected_common = [
-                item
-                for item in selected_common
                 if item
             ]
 
@@ -10586,89 +10728,6 @@ def home():
             )
 
 
-    # Final UI check: Ensure any generalized 'beef' or 'chicken' display string reflects the user's chosen pantry cut
-    if recipes:
-        pantry_cuts = [x.lower() for x in selected_common or []] + entered.lower().split(",")
-        chosen_cut = "chuck roast"
-        for cut in ["chuck roast", "stew meat", "brisket", "ground beef", "steak"]:
-            if any(cut in item for item in pantry_cuts):
-                chosen_cut = cut
-                break
-                
-        # Handle poultry display tracking configurations identically
-        chosen_poultry = "chicken"
-        for poultry in ["chicken breast", "chicken thigh", "chicken drumstick", "chicken wing"]:
-            if any(poultry in item for item in pantry_cuts):
-                chosen_poultry = poultry
-                break
-                
-        # Handle lamb display tracking configurations identically
-        chosen_lamb = "lamb"
-        for lamb_cut in ["lamb chop", "lamb shoulder", "lamb loin", "lamb shank", "ground lamb"]:
-            if any(lamb_cut in item for item in pantry_cuts):
-                chosen_lamb = lamb_cut
-                break
-        
-        for r in recipes:
-            if "matched" in r and r["matched"]:
-                r["matched"] = [chosen_cut if x.lower() == "beef" else (chosen_poultry if x.lower() == "chicken" else x) for x in r["matched"]]
-                if entered and "cheese" in entered.lower():
-                    custom_items = [x.strip().lower() for x in entered.split(",") if x.strip()]
-                    for item in custom_items:
-                        if "cheese" in item and item != "cheese":
-                            r["matched"] = [item if x.lower() == "cheese" else x for x in r["matched"]]
-                # Deduplicate elements
-                r["matched"] = list(dict.fromkeys(r["matched"]))
-            if "ingredients" in r and r["ingredients"]:
-                r["ingredients"] = [chosen_cut if str(x).lower() == "beef" else (chosen_poultry if str(x).lower() == "chicken" else x) for x in r["ingredients"]]
-        
-        for r in recipes:
-            if "matched" in r and r["matched"]:
-                r["matched"] = [chosen_cut if x.lower() == "beef" else x for x in r["matched"]]
-            if "ingredients" in r and r["ingredients"]:
-                r["ingredients"] = [chosen_cut if str(x).lower() == "beef" else x for x in r["ingredients"]]
-
-    if recipes:
-        pantry_low = [str(x).lower() for x in selected_common or []] + entered.lower().split(",")
-        has_cheddar = any("cheddar" in x for x in pantry_low)
-        has_parmesan = any("parmesan" in x for x in pantry_low)
-        for r in recipes:
-            if "matched" in r and r["matched"]:
-                r["matched"] = ["swiss cheese" if str(x).lower() == "swiss or cheese" else x for x in r["matched"]]
-                if not has_cheddar:
-                    r["matched"] = [x for x in r["matched"] if "cheddar" not in str(x).lower()]
-                if not has_parmesan:
-                    r["matched"] = [x for x in r["matched"] if "parmesan" not in str(x).lower()]
-                r["matched"] = list(dict.fromkeys(r["matched"]))
-    # Ultimate Final-Gateway Variety Re-sorter: Break up repetitive recipe title clusters
-    if recipes and len(recipes) > 2:
-        diverse_top_list = []
-        duplicate_clusters = []
-        seen_exact_slugs = set()
-        
-        for r in recipes:
-            name_raw = r.get("name", "").lower()
-            # Generate a unique slug based on core recipe identities (e.g. 'garlic butter chicken')
-            slug_words = re.findall(r'\b(garlic|butter|chicken|beef|stew|soup|fried|baked|parmesan|creamy|rice|risotto)\b', name_raw)
-            slug_key = "_".join(sorted(list(set(slug_words))))
-            
-            if slug_key and len(slug_key) > 3:
-                # If we've already seen this exact style of recipe in the top slots, move the clone to the back
-                if slug_key in seen_exact_slugs:
-                    duplicate_clusters.append(r)
-                else:
-                    diverse_top_list.append(r)
-                    # Limit the top variations of a single type to give alternative recipes room to surface
-                    if list(seen_exact_slugs).count(slug_key) >= 1:
-                        pass
-                    else:
-                        seen_exact_slugs.add(slug_key)
-            else:
-                diverse_top_list.append(r)
-                
-        # Stitch the diverse recipes to the front and push the clones to the bottom
-        recipes = diverse_top_list + duplicate_clusters
-
     return render_template_string(
         HTML,
         recipes=recipes,
@@ -10692,25 +10751,3 @@ if __name__ == "__main__":
     app.run(
         debug=False
     )
-
-
-import difflib
-
-def safe_fuzzy_correct(term):
-    if not term or not isinstance(term, str):
-        return term
-    clean = term.strip().lower()
-    known = [
-        'parsley', 'garlic', 'onion', 'ground beef', 'cheddar cheese',
-        'butter', 'milk', 'tomato', 'bell pepper', 'flour', 'rice',
-        'olive oil', 'vegetable oil', 'carrot', 'celery', 'oregano',
-        'thyme', 'basil', 'tomato paste', 'vegetable stock', 'barley',
-        'chicken', 'pork', 'turkey', 'pepper', 'salt', 'spinach',
-        'potato', 'potatoes', 'sweet potato', 'sweet potatoes',
-        'lemon', 'lime', 'cheese', 'egg', 'eggs', 'bacon', 'heavy cream',
-        'mozzarella', 'mozzarella cheese', 'parmesan', 'parmesan cheese',
-        'ricotta', 'cream cheese', 'monterey jack', 'swiss cheese'
-    ]
-    matches = difflib.get_close_matches(clean, known, n=1, cutoff=0.50)
-    return matches[0] if matches else clean
-
