@@ -740,6 +740,44 @@ def canonical_ingredient_identity(text):
     if not text:
         return ""
 
+    # -------------------------------------------------------------
+    # PROTECT EXPLICIT PLANT-BASED / VEGAN INGREDIENT IDENTITIES
+    # -------------------------------------------------------------
+    # An explicitly plant-based product must never be collapsed into
+    # the ordinary animal/product identity during canonicalization.
+    #
+    # Examples:
+    #   plant based beef -> plant-based beef
+    #   plant based chicken -> plant-based chicken
+    #   plant based sausage -> plant-based sausage
+    #   vegan beef -> vegan beef
+    #   vegan chicken -> vegan chicken
+    #   vegan sausage -> vegan sausage
+    #   vegan cheese -> vegan cheese
+    #
+    # The plant-based prefix is meaningful ingredient identity.
+    # Preserve it before meat/cheese/core canonicalization can
+    # collapse the product into beef, chicken, sausage, cheese, etc.
+    # -------------------------------------------------------------
+    plant_based_match = re.fullmatch(
+        r"(vegan|plant[\s-]+based)\s+(.+?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if plant_based_match:
+        plant_label = plant_based_match.group(1).strip().lower()
+        product_identity = re.sub(
+            r"\s+",
+            " ",
+            plant_based_match.group(2).strip(),
+        )
+
+        if product_identity:
+            if plant_label == "vegan":
+                return f"vegan {product_identity}"
+            return f"plant-based {product_identity}"
+
     # "bone-in" becomes "bone in" inside clean_word().
     # Treat that phrase as a non-identity descriptor so:
     #   bone-in chicken breast -> chicken breast
@@ -1547,6 +1585,273 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         if clean_word(item)
     ]
     original_recipe_name = clean_word(recipe_ingredient)
+
+    # -------------------------------------------------------------
+    # AUTHORITATIVE PLANT-BASED / VEGAN MATCHING
+    # -------------------------------------------------------------
+    # This must run before ingredient_alias(), canonicalization, and
+    # the meat hierarchy because those layers can turn:
+    #
+    #   vegan ground beef -> ground beef
+    #   plant based chicken breast -> chicken breast
+    #
+    # and thereby destroy the explicit plant-based identity.
+    #
+    # Generic plant-based pantry product satisfies a specific
+    # plant-based form of that same product family.
+    #
+    # Explicit plant-based products never satisfy ordinary animal
+    # products, and ordinary animal products never satisfy explicit
+    # plant-based products.
+    # -------------------------------------------------------------
+    def _early_plant_based_signature(value):
+        if not isinstance(value, str):
+            return None
+
+        name = clean_word(value)
+
+        if not name:
+            return None
+
+        lowered = name.lower().strip()
+
+        explicit = bool(
+            re.search(
+                r"\bvegan\b|\bplant\s+based\b",
+                lowered,
+            )
+        )
+
+        substitute_match = re.fullmatch(
+            r"(beef|chicken|sausage|cheese)\s+substitute",
+            lowered,
+        )
+
+        less_match = re.fullmatch(
+            r"(beef|chicken|sausage)less(?:\s+ground)?",
+            lowered,
+        )
+
+        if not explicit and not substitute_match and not less_match:
+            return None
+
+        if substitute_match:
+            family = substitute_match.group(1)
+            product = lowered
+
+        elif less_match:
+            family = less_match.group(1)
+            product = lowered
+
+        else:
+            product = re.sub(
+                r"\bvegan\b|\bplant\s+based\b",
+                " ",
+                lowered,
+            )
+
+            product = re.sub(
+                r"\s+",
+                " ",
+                product,
+            ).strip()
+
+            # The animal/product word alone does not make an ingredient
+            # a plant-based meat product.
+            #
+            # These are separate products and must NOT satisfy pantry
+            # plant-based beef/chicken/etc.:
+            #
+            #   vegan beef broth
+            #   vegan chicken stock
+            #   vegan beef bouillon
+            #   vegan sausage sauce
+            #   vegan cheese sauce
+            #   vegan beef seasoning
+            #   vegan beef powder
+            #   vegan beef flavor
+            #
+            # The exact ingredient can still match itself later through
+            # the normal ingredient identity matcher.
+            if re.search(
+                r"\b(?:broth|stock|bouillon|sauce|gravy|"
+                r"seasoning|powder|base|flou?r|flavor|flavour)\b",
+                product,
+                flags=re.IGNORECASE,
+            ):
+                return None
+
+            family = None
+
+            for candidate in (
+                "beef",
+                "chicken",
+                "sausage",
+                "cheese",
+                "pork",
+                "turkey",
+                "lamb",
+            ):
+                if re.search(
+                    rf"\b{re.escape(candidate)}\b",
+                    product,
+                ):
+                    family = candidate
+                    break
+
+            if not family:
+                return None
+
+        if family in {"beef", "chicken"}:
+            if re.search(r"\bground\b", product):
+                form = "ground"
+                specific = True
+
+            elif re.search(
+                r"\b(?:breast|thigh|drumstick|wings?|"
+                r"tenders?|cutlet|fillets?|steak)\b",
+                product,
+            ):
+                form = re.search(
+                    r"\b(?:breast|thigh|drumstick|wings?|"
+                    r"tenders?|cutlet|fillets?|steak)\b",
+                    product,
+                ).group(0)
+
+                specific = True
+
+            elif family == "beef" and re.search(
+                r"\b(?:burger|patty|patties)\b",
+                product,
+            ):
+                form = "burger"
+                specific = True
+
+            else:
+                form = family
+                specific = False
+
+        elif family == "sausage":
+            if re.search(r"\blinks?\b", product):
+                form = "link"
+                specific = True
+
+            elif re.search(
+                r"\b(?:patty|patties)\b",
+                product,
+            ):
+                form = "patty"
+                specific = True
+
+            else:
+                form = family
+                specific = False
+
+        elif family == "cheese":
+            specific_cheeses = {
+                "cheddar",
+                "mozzarella",
+                "parmesan",
+                "feta",
+                "ricotta",
+                "gouda",
+                "provolone",
+                "swiss",
+                "brie",
+                "camembert",
+                "blue",
+                "goat",
+                "cream",
+                "cottage",
+            }
+
+            found = next(
+                (
+                    item
+                    for item in specific_cheeses
+                    if re.search(
+                        rf"\b{re.escape(item)}\b",
+                        product,
+                    )
+                ),
+                None,
+            )
+
+            if found:
+                form = found
+                specific = True
+            else:
+                form = family
+                specific = False
+
+        else:
+            form = family
+            specific = False
+
+        return family, specific, form
+
+    plant_recipe = _early_plant_based_signature(
+        original_recipe_name
+    )
+
+    plant_pantry = [
+        signature
+        for signature in (
+            _early_plant_based_signature(item)
+            for item in original_user_names
+        )
+        if signature
+    ]
+
+    if plant_recipe:
+        recipe_family, recipe_specific, recipe_form = plant_recipe
+
+        for pantry_family, pantry_specific, pantry_form in plant_pantry:
+            if pantry_family != recipe_family:
+                continue
+
+            # Generic plant-based pantry item satisfies a more specific
+            # plant-based recipe form of the same product family.
+            if not pantry_specific:
+                return True
+
+            # Specific plant-based forms only satisfy the same form.
+            if (
+                pantry_specific
+                and recipe_specific
+                and pantry_form == recipe_form
+            ):
+                return True
+
+        return False
+
+    # Plant-based pantry products must not satisfy ordinary versions
+    # of the same product family.
+    if plant_pantry:
+        ordinary_family = None
+
+        for candidate in (
+            "beef",
+            "chicken",
+            "sausage",
+            "cheese",
+            "pork",
+            "turkey",
+            "lamb",
+        ):
+            if re.search(
+                rf"\b{re.escape(candidate)}\b",
+                original_recipe_name,
+            ):
+                ordinary_family = candidate
+                break
+
+        if any(
+            pantry_family == ordinary_family
+            for pantry_family, _, _ in plant_pantry
+        ):
+            return False
+
 
     # -------------------------------------------------------------
     # AUTHORITATIVE SEASONING-PEPPER DIRECTION
@@ -3089,6 +3394,78 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
         return False
 
     # -----------------------------------------------------
+    # AUTHORITATIVE PLANT-BASED / VEGAN PRODUCT MATCHING
+    # -----------------------------------------------------
+    # Explicitly plant-based products are their own ingredient family.
+    #
+    # Same product, different plant-based wording:
+    #   plant based beef <-> vegan beef = TRUE
+    #   plant based chicken <-> vegan chicken = TRUE
+    #   plant based sausage <-> vegan sausage = TRUE
+    #   plant based cheese <-> vegan cheese = TRUE
+    #
+    # Plant-based products must never match the ordinary animal/product
+    # identity:
+    #   plant based beef <-> beef = FALSE
+    #   plant based chicken <-> chicken = FALSE
+    #   plant based sausage <-> sausage = FALSE
+    #   vegan cheese <-> cheese = FALSE
+    #
+    # This runs before the broad cheese/meat families so an explicit
+    # plant-based product cannot be captured by the ordinary identity.
+    # -----------------------------------------------------
+    def _plant_based_product_key(value):
+        value = clean_word(value)
+        if not value:
+            return ""
+
+        if not (
+            re.search(r"\bvegan\b", value, flags=re.IGNORECASE)
+            or re.search(r"\bplant\s+based\b", value, flags=re.IGNORECASE)
+        ):
+            return ""
+
+        key = re.sub(
+            r"\bvegan\b",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        key = re.sub(
+            r"\bplant\s+based\b",
+            " ",
+            key,
+            flags=re.IGNORECASE,
+        )
+
+        key = re.sub(
+            r"\b(?:filet|filets|fillet|fillets|patty|patties|burger|burgers)\b",
+            " ",
+            key,
+            flags=re.IGNORECASE,
+        )
+
+        key = re.sub(r"\s+", " ", key).strip().lower()
+        return key
+
+    recipe_plant_key = _plant_based_product_key(recipe_name)
+
+    plant_based_pantry_keys = {
+        key
+        for key in (
+            _plant_based_product_key(item)
+            for item in (user_ingredients or [])
+        )
+        if key
+    }
+
+    if recipe_plant_key:
+        return recipe_plant_key in plant_based_pantry_keys
+
+    if plant_based_pantry_keys:
+        return False
+
+    # -----------------------------------------------------
     # GENERIC CHEESE MATCHING
     # -----------------------------------------------------
     # Generic pantry "cheese" can satisfy a specific cheese
@@ -3318,6 +3695,216 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
             # Specific pantry form cannot satisfy generic species
             # or another specific form.
             continue
+
+    # -------------------------------------------------------------
+    # AUTHORITATIVE PLANT-BASED / VEGAN FAMILY MATCHING
+    # -------------------------------------------------------------
+    # This runs BEFORE the ordinary meat hierarchy because explicit
+    # plant-based products contain animal-product words such as
+    # "beef", "chicken", and "sausage".
+    #
+    # Generic plant-based pantry item may satisfy a more specific
+    # plant-based recipe form of the same product family.
+    #
+    # Examples:
+    #   plant based beef  -> vegan ground beef      TRUE
+    #   plant based beef  -> beef substitute         TRUE
+    #   plant based beef  -> beefless ground         TRUE
+    #   plant based chicken -> vegan chicken breast  TRUE
+    #   plant based sausage -> vegan sausage links   TRUE
+    #
+    # Explicit plant-based products NEVER match ordinary animal
+    # products.
+    # -------------------------------------------------------------
+    def _plant_based_signature(value):
+        if not isinstance(value, str):
+            return None
+
+        name = clean_word(value)
+
+        if not name:
+            return None
+
+        lowered = name.lower().strip()
+
+        explicit = bool(
+            re.search(
+                r"\bvegan\b|\bplant\s+based\b",
+                lowered,
+            )
+        )
+
+        family = None
+
+        substitute_match = re.fullmatch(
+            r"(beef|chicken|sausage|cheese)\s+substitute",
+            lowered,
+        )
+
+        less_match = re.fullmatch(
+            r"(beef|chicken|sausage)less(?:\s+ground)?",
+            lowered,
+        )
+
+        if substitute_match:
+            family = substitute_match.group(1)
+
+        elif less_match:
+            family = less_match.group(1)
+
+        elif explicit:
+            product = re.sub(
+                r"\bvegan\b|\bplant\s+based\b",
+                " ",
+                lowered,
+            )
+
+            product = re.sub(
+                r"\s+",
+                " ",
+                product,
+            ).strip()
+
+            for candidate in (
+                "beef",
+                "chicken",
+                "sausage",
+                "cheese",
+                "pork",
+                "turkey",
+                "lamb",
+            ):
+                if re.search(
+                    rf"\b{re.escape(candidate)}\b",
+                    product,
+                ):
+                    family = candidate
+                    break
+
+        if not family:
+            return None
+
+        product_text = lowered
+
+        if family in {"beef", "chicken"}:
+            if re.search(r"\bground\b", product_text):
+                form = "ground"
+                specific = True
+            elif re.search(
+                r"\b(?:breast|thigh|drumstick|wings?|"
+                r"tenders?|cutlet|fillets?|steak)\b",
+                product_text,
+            ):
+                form = re.search(
+                    r"\b(?:breast|thigh|drumstick|wings?|"
+                    r"tenders?|cutlet|fillets?|steak)\b",
+                    product_text,
+                ).group(0)
+                specific = True
+            elif family == "beef" and re.search(
+                r"\b(?:burger|patty|patties)\b",
+                product_text,
+            ):
+                form = "burger"
+                specific = True
+            else:
+                form = family
+                specific = False
+
+        elif family == "sausage":
+            if re.search(r"\blinks?\b", product_text):
+                form = "link"
+                specific = True
+            elif re.search(
+                r"\b(?:patty|patties)\b",
+                product_text,
+            ):
+                form = "patty"
+                specific = True
+            else:
+                form = family
+                specific = False
+
+        elif family == "cheese":
+            specific_cheeses = {
+                "cheddar",
+                "mozzarella",
+                "parmesan",
+                "feta",
+                "ricotta",
+                "gouda",
+                "provolone",
+                "swiss",
+                "brie",
+                "camembert",
+                "blue",
+                "goat",
+                "cream",
+                "cottage",
+            }
+
+            found = next(
+                (
+                    item
+                    for item in specific_cheeses
+                    if re.search(
+                        rf"\b{re.escape(item)}\b",
+                        product_text,
+                    )
+                ),
+                None,
+            )
+
+            if found:
+                form = found
+                specific = True
+            else:
+                form = family
+                specific = False
+
+        else:
+            form = family
+            specific = False
+
+        return family, specific, form
+
+    plant_recipe = _plant_based_signature(recipe_name)
+
+    plant_pantry = [
+        signature
+        for signature in (
+            _plant_based_signature(item)
+            for item in (user_ingredients or [])
+        )
+        if signature
+    ]
+
+    if plant_recipe:
+        recipe_family, recipe_specific, recipe_form = plant_recipe
+
+        for pantry_family, pantry_specific, pantry_form in plant_pantry:
+            if pantry_family != recipe_family:
+                continue
+
+            # Generic plant-based pantry product satisfies a specific
+            # plant-based recipe form of the same family.
+            if not pantry_specific:
+                return True
+
+            # Specific plant-based form only satisfies the same form.
+            if (
+                pantry_specific
+                and recipe_specific
+                and pantry_form == recipe_form
+            ):
+                return True
+
+        return False
+
+    # Never let an explicit plant-based pantry item fall through into
+    # ordinary meat/cheese/core matching.
+    if plant_pantry:
+        return False
 
     # -----------------------------------------------------
     # AUTHORITATIVE MEAT HIERARCHY MATCHING
@@ -4954,6 +5541,66 @@ def search_web_recipes(user_ingredients, count=10):
     else:
         queries = [" ".join(ingredients) + " recipe"]
 
+    # -------------------------------------------------------------
+    # UNIVERSAL PLANT-BASED / VEGAN SEARCH DISCOVERY
+    # -------------------------------------------------------------
+    # Search discovery must find recipes that USE the selected
+    # plant-based product, not only recipes that teach the user how
+    # to make the product itself.
+    #
+    # Examples:
+    #   recipes with vegan chicken
+    #   recipes using vegan sausage
+    #   vegan cheese dinner recipes
+    #
+    # This affects web search only. Ingredient identity and pantry
+    # matching remain controlled by the authoritative matcher.
+    # -------------------------------------------------------------
+    if len(ingredients) == 1:
+        ingredient_query = ingredients[0]
+
+        plant_match = re.fullmatch(
+            r"(?:vegan|plant\s+based|plant-based)\s+(.+)",
+            ingredient_query,
+            flags=re.IGNORECASE,
+        )
+
+        if plant_match:
+            product = plant_match.group(1).strip()
+
+            expanded_queries = [
+                ingredient_query + " recipe",
+                ingredient_query + " recipes",
+                "recipes with " + ingredient_query,
+                "recipes using " + ingredient_query,
+                "recipes using " + ingredient_query,
+                ingredient_query + " dinner recipes",
+                ingredient_query + " meal recipes",
+
+                "vegan " + product + " recipe",
+                "vegan " + product + " recipes",
+                "recipes with vegan " + product,
+                "recipes using vegan " + product,
+                "recipes using vegan " + product,
+                "vegan " + product + " dinner recipes",
+
+                "plant based " + product + " recipe",
+                "plant based " + product + " recipes",
+                "recipes with plant based " + product,
+                "recipes using plant based " + product,
+
+                "plant-based " + product + " recipe",
+                "plant-based " + product + " recipes",
+                "recipes with plant-based " + product,
+                "recipes using plant-based " + product,
+                "recipes using plant-based " + product,
+            ]
+
+            for query in expanded_queries:
+                if query not in queries:
+                    queries.append(query)
+
+
     # Specific cheese selections must drive recipe discovery.
     # This overrides only the search query for cheese selections;
     # all existing non-cheese query behavior remains unchanged.
@@ -4993,6 +5640,91 @@ def search_web_recipes(user_ingredients, count=10):
     if selected_cheese:
         queries = ["recipes with " + selected_cheese]
 
+    # -------------------------------------------------------------
+    # PLANT-BASED / VEGAN SEARCH EXPANSION
+    # -------------------------------------------------------------
+    # Search engines frequently index the same product under different
+    # explicit plant-based wording:
+    #
+    #   plant-based beef <-> vegan beef
+    #   plant-based chicken <-> vegan chicken
+    #   plant-based sausage <-> vegan sausage
+    #   vegan cheese <-> plant-based cheese
+    #
+    # The matcher already knows these are equivalent plant-based products.
+    # The web search must use the same vocabulary so the recipe is actually
+    # discovered before matching can occur.
+    #
+    # Never search the unqualified animal/product name here. That would
+    # intentionally broaden a plant-based request into ordinary recipes.
+    # -------------------------------------------------------------
+    selected_plant_based = next(
+        (
+            ingredient
+            for ingredient in ingredients
+            if re.search(
+                r"\bvegan\b|\bplant\s+based\b",
+                ingredient,
+                flags=re.IGNORECASE,
+            )
+        ),
+        None,
+    )
+
+    if selected_plant_based:
+        base_product = re.sub(
+            r"\bvegan\b|\bplant\s+based\b",
+            " ",
+            selected_plant_based,
+            flags=re.IGNORECASE,
+        )
+        base_product = re.sub(
+            r"\s+",
+            " ",
+            base_product,
+        ).strip()
+
+        plant_based_variants = []
+
+        for variant in (
+            selected_plant_based,
+            f"vegan {base_product}",
+            f"plant-based {base_product}",
+        ):
+            variant = re.sub(r"\s+", " ", variant).strip()
+
+            if (
+                variant
+                and variant.lower()
+                not in {
+                    item.lower()
+                    for item in plant_based_variants
+                }
+            ):
+                plant_based_variants.append(variant)
+
+        plant_based_queries = []
+
+        for variant in plant_based_variants:
+            for query in (
+                f"{variant} recipe",
+                f"{variant} recipes",
+                f"recipes with {variant}",
+            ):
+                if query not in plant_based_queries:
+                    plant_based_queries.append(query)
+
+        if len(ingredients) == 1:
+            queries = plant_based_queries
+        else:
+            existing_queries = list(queries)
+
+            for query in plant_based_queries:
+                if query not in existing_queries:
+                    existing_queries.append(query)
+
+            queries = existing_queries
+
     selected_protein_terms = []
     for item in ingredients:
         for meat_options in MEAT_GROUPS.values():
@@ -5005,6 +5737,72 @@ def search_web_recipes(user_ingredients, count=10):
             protein_query = protein + " recipe"
             if protein_query not in queries:
                 queries.append(protein_query)
+
+    # -------------------------------------------------------------
+    # ACTIVE PLANT-BASED SEARCH DISCOVERY
+    # -------------------------------------------------------------
+    # This block is deliberately positioned immediately before the
+    # search request loop so the active function cannot overwrite it.
+    # It adds recipe-use queries for explicit vegan/plant-based items.
+    # -------------------------------------------------------------
+    if len(ingredients) == 1:
+        ingredient_query = ingredients[0]
+
+        plant_match = re.fullmatch(
+            r"(?:vegan|plant\s+based|plant-based)\s+(.+)",
+            ingredient_query,
+            flags=re.IGNORECASE,
+        )
+
+        if plant_match:
+            product = plant_match.group(1).strip()
+
+            active_plant_queries = [
+                "recipes with " + ingredient_query,
+                "recipes using " + ingredient_query,
+                "recipes made with " + ingredient_query,
+
+                "recipes with vegan " + product,
+                "recipes using vegan " + product,
+                "vegan " + product + " dinner recipes",
+                "vegan " + product + " meal recipes",
+                "vegan " + product + " main dish recipes",
+
+                "recipes with plant-based " + product,
+                "recipes using plant-based " + product,
+
+                "recipes with plant based " + product,
+                "recipes using plant based " + product,
+            ]
+
+            if product.lower().strip() == "cheese":
+                active_plant_queries.extend([
+                    "vegan cheese pizza recipe",
+                    "vegan cheese pasta recipe",
+                    "vegan cheese quesadilla recipe",
+                    "vegan cheese casserole recipe",
+                    "vegan cheese enchiladas recipe",
+                    "vegan cheese baked ziti recipe",
+                    "vegan cheese lasagna recipe",
+                    "vegan cheese sandwich recipe",
+                    "dairy free cheese pizza recipe",
+                ])
+
+            for query in active_plant_queries:
+                if query not in queries:
+                    queries.append(query)
+
+
+    plant_based_search = (
+        len(ingredients) == 1
+        and bool(
+            re.fullmatch(
+                r"(?:vegan|plant\s+based|plant-based)\s+.+",
+                ingredients[0],
+                flags=re.IGNORECASE,
+            )
+        )
+    )
 
     try:
         results = []
@@ -5289,7 +6087,7 @@ def search_web_recipes(user_ingredients, count=10):
 
                     results.append(recipe)
 
-                    if len(results) >= count:
+                    if len(results) >= count and not plant_based_search:
                         # We already have enough usable recipes.
                         # Pending futures are cancelled where possible.
                         for pending in futures:
@@ -5297,7 +6095,7 @@ def search_web_recipes(user_ingredients, count=10):
                                 pending.cancel()
                         break
 
-            if len(results) >= count:
+            if len(results) >= count and not plant_based_search:
                 break
 
         return results
@@ -7141,6 +7939,59 @@ def extract_ingredient_identity(text):
         half_check = text.strip().lower().replace("-", " ")
         if "half and half" in half_check:
             return "half-and-half"
+
+    # -------------------------------------------------------------
+    # PROTECT EXPLICIT PLANT-BASED / VEGAN INGREDIENT IDENTITY
+    # -------------------------------------------------------------
+    # The words "vegan" and "plant-based" are meaningful ingredient
+    # identity when they explicitly modify a product. Preserve that
+    # identity before the normal canonicalization layer can collapse:
+    #
+    #   vegan ground beef -> ground beef
+    #   plant-based cheese -> cheese
+    #
+    # The product itself is still cleaned by the authoritative extractor.
+    # -------------------------------------------------------------
+    if isinstance(text, str):
+        source = re.sub(
+            r"\s+",
+            " ",
+            text.strip(),
+        )
+
+        plant_match = re.fullmatch(
+            r"(vegan|plant[\s-]+based)\s+(.+)",
+            source,
+            flags=re.IGNORECASE,
+        )
+
+        if plant_match:
+            label = plant_match.group(1).lower()
+            product_text = plant_match.group(2).strip()
+
+            product_identity = _extract_ingredient_identity_base(
+                product_text
+            )
+
+            if product_identity:
+                product_identity = canonical_ingredient_identity(
+                    product_identity
+                ) or product_identity
+
+                product_identity = re.sub(
+                    r"\s+",
+                    " ",
+                    product_identity,
+                ).strip()
+
+                if product_identity:
+                    prefix = (
+                        "vegan"
+                        if label == "vegan"
+                        else "plant-based"
+                    )
+
+                    return f"{prefix} {product_identity}"
 
     result = _extract_ingredient_identity_base(text)
 
