@@ -773,6 +773,16 @@ def canonical_ingredient_identity(text):
             plant_based_match.group(2).strip(),
         )
 
+        # Plant-based meat products use the base product as the
+        # ingredient identity, not the serving/cut form.
+        product_identity = re.sub(
+            r"\s+(?:breasts?|thighs?|drumsticks?|wings?|tenders?|"
+            r"cutlets?|fillets?|steaks?|burgers?|patties?)\b.*$",
+            "",
+            product_identity,
+            flags=re.IGNORECASE,
+        ).strip()
+
         if product_identity:
             if plant_label == "vegan":
                 return f"vegan {product_identity}"
@@ -1092,6 +1102,25 @@ def canonical_ingredient_identity(text):
     if not text:
         return ""
 
+    # Universal grammatical/source-artifact cleanup.
+    # These are not distinct ingredient identities.
+    text = re.sub(
+        r"^juice(?:\s+of)?\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    text = re.sub(
+        r"^up\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    if not text:
+        return ""
+
     # A compound seasoning may become just a pepper phrase after salt removal.
     if (
         re.fullmatch(r"pepper", text)
@@ -1329,6 +1358,40 @@ def ingredient_alias(text):
 
     if cached is not None:
         return cached
+
+    # Preserve explicit plant-based / vegan identities before typo
+    # correction can collapse them into ordinary animal ingredients.
+    plant_based_alias_match = re.fullmatch(
+        r"(vegan|plant[\s-]+based)\s+(.+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if plant_based_alias_match:
+        plant_label = plant_based_alias_match.group(1).strip().lower()
+        product_identity = re.sub(
+            r"\s+",
+            " ",
+            plant_based_alias_match.group(2).strip(),
+        )
+
+        # Serving/cut forms are not separate ingredient identities.
+        product_identity = re.sub(
+            r"\s+(?:breasts?|thighs?|drumsticks?|wings?|tenders?|"
+            r"cutlets?|fillets?|steaks?|burgers?|patties?)\b.*$",
+            "",
+            product_identity,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        if product_identity:
+            if plant_label == "vegan":
+                result = f"vegan {product_identity}"
+            else:
+                result = f"plant-based {product_identity}"
+
+            result = canonical_ingredient_identity(result)
+            _INGREDIENT_ALIAS_CACHE[raw_text] = result
+            return result
 
     if text == 'lean ground beef':
         result = 'ground beef'
@@ -6733,6 +6796,14 @@ def normalize_recipe_ingredient(text, preserve_source=False):
             alternative = re.sub(r'\s+', ' ', alternative).strip()
 
             if alternative:
+                # Remove stray source-artifact wording such as "up lemon zest".
+                alternative = re.sub(
+                    r'^up\s+',
+                    '',
+                    alternative,
+                    flags=re.IGNORECASE
+                ).strip()
+
                 cleaned_alternatives.append(alternative)
 
         alternatives = cleaned_alternatives
