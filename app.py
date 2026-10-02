@@ -1017,6 +1017,42 @@ def canonical_ingredient_identity(text):
     ):
         return ""
 
+    # "Whole" is a milk-fat descriptor, not a separate grocery identity.
+    # Keep "whole" intact for other ingredients where it can be meaningful.
+    text = re.sub(
+        r"\bwhole\s+(?=milk\b)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove universal freshness/source descriptors that do not define
+    # the ingredient identity.
+    #
+    # Examples:
+    #   fresh parsley -> parsley
+    #   fresh garlic -> garlic
+    #   fresh basil -> basil
+    #
+    # "fresh" is descriptive; it is not a separate grocery item.
+    text = re.sub(
+        r"\b(?:fresh|frozen)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Normalize flour before the general descriptor cleanup.
+    # clean_word() converts hyphens to spaces, so:
+    #   all-purpose flour -> all purpose flour
+    # Both forms represent the same grocery identity: flour.
+    if re.fullmatch(
+        r"(?:all\s+purpose|plain)\s+flour",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        text = "flour"
+
     # Remove non-identity quality / raising descriptors.
     text = re.sub(
         r"\b(?:grass\s+fed|grassfed|grain\s+fed|pasture\s+raised|"
@@ -1027,10 +1063,11 @@ def canonical_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
-    # Remove non-identity size wording.
+    # Remove non-identity size/quantity wording.
+    # Measurement units such as pound/lb are not grocery identities.
     text = re.sub(
         r"\b(?:extra\s+large|large|medium|small|baby|little|"
-        r"bunches?)\b",
+        r"bunches?|pounds?|lbs?|lb)\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -1069,9 +1106,30 @@ def canonical_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
-    # Preparation/instruction wording starts the non-identity tail.
+    # Normalize a common source/preparation construction before
+    # removing generic preparation wording.
+    #
+    # Example:
+    #   freshly squeezed lemon juice -> lemon
     text = re.sub(
-        r"\s+\b(?:roughly|rough|lightly|heavily|"
+        r"^\s*freshly\s+squeezed\s+(.+?)\s+juice\s*$",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove leading preparation/instruction wording.
+    # These descriptors are not ingredient identities and may appear
+    # before the ingredient in scraped recipe text.
+    #
+    # Examples:
+    #   chopped onion -> onion
+    #   diced tomato -> tomato
+    #   minced garlic -> garlic
+    #   sliced peppers -> peppers
+    #   grated Parmesan -> parmesan
+    text = re.sub(
+        r"^\s*(?:roughly|rough|lightly|heavily|"
         r"chopped|chop|diced|dice|sliced|slice|cubed|cube|"
         r"minced|mince|mashed|mash|crushed|crush|"
         r"smashed|smash|grated|grate|shredded|shred|"
@@ -1081,6 +1139,29 @@ def canonical_ingredient_identity(text):
         r"sauteed|saute|sautéed|sauté|fried|grilled|"
         r"seared|steamed|thawed|softened|melted|reserved|"
         r"divided|for\s+garnish|for\s+serving|as\s+needed|"
+        r"to\s+taste)\b\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Preparation/instruction wording starts the non-identity tail.
+    text = re.sub(
+        r"\s+\b(?:finely|thinly|thickly|"
+        r"roughly|rough|lightly|heavily|"
+        r"chopped|chop|diced|dice|sliced|slice|cubed|cube|"
+        r"minced|mince|mashed|mash|crushed|crush|"
+        r"smashed|smash|grated|grate|shredded|shred|"
+        r"julienned|cut|cutting|quartered|halved|"
+        r"peeled|peel|trimmed|trim|browned|cooked|uncooked|"
+        r"drained|rinsed|washed|roasted|baked|boiled|"
+        r"sauteed|saute|sautéed|sauté|fried|grilled|"
+        r"seared|steamed|thawed|softened|melted|reserved|"
+        r"divided|for\s+(?:frying|cooking|serving|garnish)|"
+        r"skin\s+(?:removed|on|off)|"
+        r"bone[- ]?in|bone[- ]?out|"
+        r"peeled|deveined|deboned|"
+        r"for\s+garnish|for\s+serving|as\s+needed|"
         r"to\s+taste)\b.*$",
         "",
         text,
@@ -1262,6 +1343,13 @@ def canonical_ingredient_identity(text):
         "yellow onions": "yellow onion",
         "white onions": "white onion",
         "sweet onions": "sweet onion",
+        "chicken breasts": "chicken breast",
+        "chicken thighs": "chicken thigh",
+        "chicken wings": "chicken wing",
+        "chicken drumsticks": "chicken drumstick",
+        "chicken tenders": "chicken tender",
+        "pork chops": "pork chop",
+        "salmon fillets": "salmon fillet",
     }
 
     # Apply established grammatical singularization to the final noun
@@ -1275,12 +1363,22 @@ def canonical_ingredient_identity(text):
     # Words not in the established singular map are preserved exactly.
     # Therefore legitimate plural product identities such as
     # "red pepper flakes" remain unchanged.
-    words = text.split()
+    # First apply an exact established identity mapping.
+    # This is important for compound identities such as:
+    #   chicken breasts -> chicken breast
+    #   chicken thighs -> chicken thigh
+    #   green onions -> green onion
+    #
+    # The full phrase must be checked before final-word
+    # singularization so compound identities are not broken apart.
+    exact_singular = singulars.get(text)
+    if exact_singular:
+        return exact_singular
 
+    words = text.split()
     if words:
         last_word = words[-1]
         singular_last_word = singulars.get(last_word, last_word)
-
         if singular_last_word != last_word:
             words[-1] = singular_last_word
             text = " ".join(words)
