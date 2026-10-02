@@ -1118,6 +1118,74 @@ def canonical_ingredient_identity(text):
         flags=re.IGNORECASE,
     )
 
+    # Normalize common ingredient-source constructions before
+    # generic preparation cleanup.
+    #
+    # Examples:
+    #   zest and juice of 1 large lemon -> lemon
+    #   lemon zest -> lemon
+    #   lime zest -> lime
+    #   orange zest -> orange
+    text = re.sub(
+        r"^\s*zest\s+and\s+juice\s+(?:of\s+)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s+zest\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Common serving/form words are not separate ingredient identities.
+    # Examples:
+    #   lemon slices -> lemon
+    #   tomato slices -> tomato
+    #   onion slices -> onion
+    #   lime wedges -> lime
+    text = re.sub(
+        r"\s+(?:slices?|wedges?|chunks?|pieces?)\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # "Additional" describes another quantity/portion of the same
+    # ingredient; it is not part of the grocery identity.
+    text = re.sub(
+        r"^\s*additional\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Standalone preparation/form/source fragments are not grocery
+    # ingredients and must never become recipe requirements by
+    # themselves.
+    #
+    # Examples:
+    #   zest -> ""
+    #   juice -> ""
+    #   slices -> ""
+    #   wedges -> ""
+    #   skin -> ""
+    #   bone -> ""
+    if text.lower() in {
+        "zest",
+        "juice",
+        "additional",
+        "slices",
+        "slice",
+        "wedges",
+        "wedge",
+        "skin",
+        "bone",
+    }:
+        return ""
+
     # Remove leading preparation/instruction wording.
     # These descriptors are not ingredient identities and may appear
     # before the ingredient in scraped recipe text.
@@ -1332,6 +1400,7 @@ def canonical_ingredient_identity(text):
 
     # Known harmless plural forms.
     singulars = {
+        "lemons": "lemon",
         "tomatoes": "tomato",
         "carrots": "carrot",
         "potatoes": "potato",
@@ -3731,6 +3800,57 @@ def _ingredient_matches_uncached(recipe_ingredient, user_ingredients, allow_pant
                     and user_name != "cheese"
                 ):
                     return True
+
+        return False
+
+    # -----------------------------------------------------
+    # ONION FAMILY MATCHING
+    # -----------------------------------------------------
+    # Generic pantry onion may satisfy a specific onion variety
+    # required by a recipe.
+    #
+    # Direction is intentional:
+    #   onion -> white onion       TRUE
+    #   onion -> yellow onion      TRUE
+    #   onion -> green onion       TRUE
+    #
+    # A specific pantry onion must not satisfy generic recipe
+    # onion in the reverse direction.
+    # -----------------------------------------------------
+    onion_variants = {
+        "onion",
+        "white onion",
+        "yellow onion",
+        "red onion",
+        "green onion",
+        "sweet onion",
+    }
+
+    if recipe_name in onion_variants:
+        for user_item in user_ingredients or []:
+            user_name = clean_word(user_item)
+
+            if not user_name:
+                continue
+
+            user_name = ingredient_alias(user_name)
+            user_name = clean_word(user_name)
+
+            if user_name not in onion_variants:
+                continue
+
+            # Exact/same specific onion is valid.
+            if recipe_name == user_name:
+                return True
+
+            # Generic pantry onion satisfies any specific
+            # onion variety required by the recipe.
+            if recipe_name != "onion" and user_name == "onion":
+                return True
+
+            # Specific pantry onion cannot satisfy generic
+            # recipe onion or a different specific variety.
+            continue
 
         return False
 
