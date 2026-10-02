@@ -1183,6 +1183,7 @@ def canonical_ingredient_identity(text):
         "wedge",
         "skin",
         "bone",
+        "left whole",
     }:
         return ""
 
@@ -1229,6 +1230,7 @@ def canonical_ingredient_identity(text):
         r"skin\s+(?:removed|on|off)|"
         r"bone[- ]?in|bone[- ]?out|"
         r"peeled|deveined|deboned|"
+        r"left\s+whole|"
         r"for\s+garnish|for\s+serving|as\s+needed|"
         r"to\s+taste)\b.*$",
         "",
@@ -1399,7 +1401,17 @@ def canonical_ingredient_identity(text):
     )
 
     # Known harmless plural forms.
+    # Preserve established small-tomato product identities as plural
+    # grocery names. These are meaningful variety names, not generic
+    # grammatical plurals:
+    #
+    #   grape tomatoes -> grape tomatoes
+    #   cherry tomatoes -> cherry tomatoes
+    #   currant tomatoes -> currant tomatoes
     singulars = {
+        "grape tomatoes": "grape tomatoes",
+        "cherry tomatoes": "cherry tomatoes",
+        "currant tomatoes": "currant tomatoes",
         "lemons": "lemon",
         "tomatoes": "tomato",
         "carrots": "carrot",
@@ -4953,7 +4965,8 @@ def user_facing_ingredient_identity(text):
         r"\s+\b(?:seeded|deveined|defrosted|thawed|"
         r"room\s+temperature|optional|heaping|"
         r"for\s+the\s+recipe|for\s+the\s+sauce|"
-        r"white\s+parts?\s+only|green\s+parts?\s+only)\b.*$",
+        r"white\s+parts?\s+only|green\s+parts?\s+only|"
+        r"left\s+whole)\b.*$",
         "",
         value,
         flags=re.IGNORECASE,
@@ -5587,6 +5600,118 @@ def match_recipe_to_pantry(recipe, pantry_items):
                         alternative
                     )
 
+    # -----------------------------------------------------
+    # UNIVERSAL ONE-TO-ONE PANTRY ASSIGNMENT
+    # -----------------------------------------------------
+    # A single pantry ingredient can satisfy at most ONE distinct
+    # recipe requirement.
+    #
+    # This is important for directional family matching:
+    #
+    #   pantry onion -> recipe white onion      TRUE
+    #   pantry onion -> recipe green onion      TRUE
+    #
+    # But the SAME pantry onion cannot satisfy both requirements
+    # in the same recipe.
+    #
+    # Use maximum bipartite matching rather than greedy matching so
+    # exact/specific pantry items are preserved when a generic pantry
+    # item could otherwise take their place.
+    # -----------------------------------------------------
+
+    requirement_matches = {}
+
+    requirement_names = list(requirements.keys())
+
+    def requirement_options(name, info):
+        options = [name]
+
+        for alternative in info.get("alternatives", []):
+            if alternative not in options:
+                options.append(alternative)
+
+        return options
+
+    def pantry_item_matches_requirement(requirement_name, pantry_item):
+        if (
+            beef_recipe
+            and requirement_name == "stew meat"
+            and pantry_item == "beef"
+        ):
+            return True
+
+        return matches(requirement_name)
+
+    # Build candidate edges without changing the existing ingredient
+    # matching rules. Each edge means this pantry item can satisfy
+    # this one recipe requirement.
+    candidate_edges = {}
+
+    for name, info in requirements.items():
+        edges = []
+
+        for pantry_item in pantry:
+            matched_option = None
+
+            for option in requirement_options(name, info):
+                if (
+                    clean_word(option) == clean_word(pantry_item)
+                    or ingredient_matches(
+                        option,
+                        [pantry_item],
+                    )
+                ):
+                    matched_option = option
+                    break
+
+            if matched_option:
+                edges.append(
+                    (pantry_item, matched_option)
+                )
+
+        candidate_edges[name] = edges
+
+    # Maximum bipartite matching:
+    # each recipe requirement gets at most one pantry item, and each
+    # pantry item can be assigned to at most one requirement.
+    pantry_to_requirement = {}
+
+    def assign_requirement(requirement_name, visited):
+        for pantry_item, matched_option in candidate_edges.get(
+            requirement_name,
+            []
+        ):
+            if pantry_item in visited:
+                continue
+
+            visited.add(pantry_item)
+
+            previous_requirement = pantry_to_requirement.get(
+                pantry_item
+            )
+
+            if (
+                previous_requirement is None
+                or assign_requirement(
+                    previous_requirement,
+                    visited,
+                )
+            ):
+                pantry_to_requirement[pantry_item] = requirement_name
+                requirement_matches[requirement_name] = (
+                    pantry_item,
+                    matched_option,
+                )
+                return True
+
+        return False
+
+    for requirement_name in requirement_names:
+        assign_requirement(
+            requirement_name,
+            set(),
+        )
+
     have = []
     missing = []
     substitutions = []
@@ -5602,9 +5727,11 @@ def match_recipe_to_pantry(recipe, pantry_items):
         # -----------------------------------------------------
         # PRIMARY INGREDIENT MATCH
         # -----------------------------------------------------
-        if matches(name) or contextual_match:
+        if name in requirement_matches:
+            matched_pantry_item, matched_option = requirement_matches[name]
+
             have.append({
-                "ingredient": name,
+                "ingredient": matched_option,
                 "original": info["original"],
                 "status": "have"
             })
@@ -5621,10 +5748,14 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
         found_alternative = None
 
-        for alternative in info["alternatives"]:
-            if matches(alternative):
-                found_alternative = alternative
-                break
+        if name in requirement_matches:
+            matched_pantry_item, matched_option = requirement_matches[name]
+
+            if (
+                matched_option.lower()
+                != name.lower()
+            ):
+                found_alternative = matched_option
 
         if found_alternative:
             have.append({
@@ -6021,6 +6152,60 @@ def search_web_recipes(user_ingredients, count=10):
                     queries.append(query)
 
 
+    # -------------------------------------------------------------
+    # UNIVERSAL DIET & STYLE SEARCH DISCOVERY
+    # -------------------------------------------------------------
+    # Diet/style selections such as Healthy and Fancy are search
+    # concepts, not literal recipe ingredients. Expand them into
+    # recipe-oriented phrases so Brave is more likely to return
+    # individual recipe pages instead of collection pages.
+    # -------------------------------------------------------------
+
+    diet_search_expansions = {
+        "healthy": [
+            "healthy dinner recipe",
+            "healthy main dish recipe",
+            "healthy low calorie dinner recipe",
+            "healthy dinner recipe under 500 calories",
+            "heart healthy dinner recipe",
+            "easy healthy dinner recipe",
+            "healthy chicken dinner recipe",
+        ],
+        "fancy": [
+            "fancy chicken recipe",
+            "fancy beef recipe",
+            "fancy steak recipe",
+            "fancy salmon recipe",
+            "fancy shrimp recipe",
+            "fancy pork recipe",
+            "fancy pasta recipe",
+            "fancy dinner recipe",
+        ],
+        "quick": [
+            "quick dinner recipe",
+            "30 minute dinner recipe",
+            "quick easy dinner recipe",
+            "fast weeknight dinner recipe",
+            "20 minute dinner recipe",
+        ],
+        "vegan": [
+            "vegan dinner recipe",
+            "vegan main dish recipe",
+            "easy vegan dinner recipe",
+            "vegan dinner recipe for beginners",
+            "vegan main course recipe",
+        ],
+    }
+
+    if len(ingredients) == 1:
+        selected_search_style = ingredients[0].strip().lower()
+        for query in diet_search_expansions.get(
+            selected_search_style,
+            [],
+        ):
+            if query not in queries:
+                queries.append(query)
+
     plant_based_search = (
         len(ingredients) == 1
         and bool(
@@ -6100,6 +6285,65 @@ def search_web_recipes(user_ingredients, count=10):
 
                     if not recipe.get("name"):
                         recipe["name"] = title
+
+                    # -----------------------------------------------------
+                    # UNIVERSAL COLLECTION / CATEGORY PAGE REJECTION
+                    # -----------------------------------------------------
+                    # Search engines frequently return recipe collections,
+                    # galleries, roundups, and category pages that contain
+                    # Recipe Schema even though they are not one recipe.
+                    #
+                    # These pages can expose many unrelated ingredients as
+                    # one fake recipe and must never enter matching.
+                    # -----------------------------------------------------
+                    recipe_name = str(
+                        recipe.get("name", "")
+                    ).strip()
+
+                    recipe_title = str(
+                        title or ""
+                    ).strip()
+
+                    combined_page_text = (
+                        recipe_name + " " + recipe_title
+                    ).lower()
+
+                    collection_page = bool(
+                        re.search(
+                            r"\b(?:recipes?|recipe\s+ideas?|"
+                            r"recipe\s+collections?|"
+                            r"recipe\s+roundups?|"
+                            r"recipe\s+galleries?|"
+                            r"meal\s+ideas?|dinner\s+ideas?)\b",
+                            combined_page_text,
+                            flags=re.IGNORECASE,
+                        )
+                        and (
+                            re.search(
+                                r"\b\d+\+?\b",
+                                combined_page_text,
+                            )
+                            or re.search(
+                                r"\b(?:collection|gallery|"
+                                r"roundup|ideas|list|best|top|"
+                                r"favorite|favorites)\b",
+                                combined_page_text,
+                                flags=re.IGNORECASE,
+                            )
+                            or re.search(
+                                r"\brecipes?\b",
+                                recipe_name,
+                                flags=re.IGNORECASE,
+                            )
+                        )
+                    )
+
+                    if collection_page:
+                        print(
+                            "Skipping search result - collection/category page:",
+                            recipe_name or recipe_title,
+                        )
+                        continue
 
                     if not recipe.get("ingredients"):
                         print(
@@ -8798,12 +9042,34 @@ def extract_web_recipe(url):
                 else:
                     ingredients = [ingredients]
 
-            instructions = instruction_text(
-                item.get(
-                    "recipeInstructions",
-                    []
+            instructions = "\n".join(
+                instruction_text(
+                    item.get(
+                        "recipeInstructions",
+                        []
+                    )
                 )
             )
+
+            recipe_name = html_lib.unescape(
+                str(
+                    item.get(
+                        "name",
+                        ""
+                    )
+                )
+            ).strip()
+
+            # A Recipe schema object is not necessarily a standalone
+            # usable recipe. Collection and listicle pages can expose
+            # partial Recipe markup. Require the basic structure of an
+            # actual recipe before allowing it into the recipe pipeline.
+            if (
+                not recipe_name
+                or not ingredients
+                or not instructions.strip()
+            ):
+                return None
 
             return {
                 "name": html_lib.unescape(
@@ -9447,10 +9713,9 @@ def quick_recipe_check(recipe):
 
 
 def healthy_recipe_check(recipe):
-    """Return True only when usable per-serving nutrition meets
+    """Return True when available per-serving nutrition supports
     InThePantry's Healthy screening criteria."""
     nutrition = recipe.get("nutrition", {})
-
     if not isinstance(nutrition, dict):
         return False
 
@@ -9471,18 +9736,23 @@ def healthy_recipe_check(recipe):
     saturated_fat = number("saturatedFatContent")
     sodium = number("sodiumContent")
 
-    if any(value is None for value in (calories, fat, saturated_fat, sodium)):
+    # Calories are the minimum required nutrition signal.
+    # Other nutrition fields are evaluated when the source provides them.
+    if calories is None or calories <= 0:
         return False
 
-    if calories <= 0 or fat < 0 or saturated_fat < 0 or sodium < 0:
+    if fat is not None and (fat < 0 or fat > 20):
         return False
 
-    return (
-        calories <= 500
-        and fat <= 20
-        and saturated_fat <= 8
-        and sodium <= 800
-    )
+    if saturated_fat is not None and (
+        saturated_fat < 0 or saturated_fat > 8
+    ):
+        return False
+
+    if sodium is not None and (sodium < 0 or sodium > 800):
+        return False
+
+    return calories <= 500
 
 
 def recipe_cuisine_matches(recipe, selected_cuisine):
@@ -9812,6 +10082,18 @@ def find_recipes(
                 continue
 
         # -----------------------------------------------------
+        # HARD FANCY DIET FILTER
+        # -----------------------------------------------------
+        # Fancy is a true eligibility filter. A recipe must contain
+        # strong evidence of an elevated, special-occasion,
+        # entertaining, or gourmet style before it can be returned
+        # when Fancy is selected.
+        # -----------------------------------------------------
+        if selected_diet == "fancy":
+            if not fancy_recipe_check(recipe):
+                continue
+
+        # -----------------------------------------------------
         # HARD VEGAN DIET FILTER
         # -----------------------------------------------------
         # Vegan is a true eligibility filter. Explicit vegan
@@ -9857,7 +10139,10 @@ def find_recipes(
                         continue
 
                     # Explicit vegan ingredients are safe.
-                    if re.search(r"\bvegan\b", normalized_name):
+                    if re.search(
+                        r"\b(?:vegan|plant[- ]based)\b",
+                        normalized_name,
+                    ):
                         continue
 
                     # Use the existing application vocabulary for
@@ -11944,10 +12229,7 @@ def home():
             print("BROWSER SEARCH PAYLOAD:", search_payload)
             print("BROWSER USER INGREDIENTS:", user_ingredients)
             if selected_diet:
-                if selected_diet == "fancy":
-                    search_payload.append("gourmet")
-                else:
-                    search_payload.append(selected_diet)
+                search_payload.append(selected_diet)
             if selected_cuisine:
                 search_payload.append(selected_cuisine)
             recipes = find_recipes(
