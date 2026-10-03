@@ -10630,7 +10630,7 @@ HTML = """
 }
         body {
             font-family: Arial, sans-serif;
-            background: #f7f3ed url('/static/in-the-pantry-background.png') center center / cover fixed no-repeat;
+            background: linear-gradient(rgba(247, 243, 237, 0.30), rgba(247, 243, 237, 0.30)), url('/static/in-the-pantry-background.png') center center / cover fixed no-repeat;
             margin: 0;
             padding: 20px;
         }
@@ -10647,7 +10647,7 @@ HTML = """
 
         .subtitle {
             text-align: center;
-            color: #666;
+            color: #333;
             margin-bottom: 6px;
         }
 
@@ -10660,7 +10660,7 @@ HTML = """
         }
 
         form {
-            background: white;
+            background: rgba(247, 243, 237, 0.72);
             padding: 20px;
             border-radius: 12px;
             margin-bottom: 25px;
@@ -10691,7 +10691,7 @@ HTML = """
             margin: 4px 0 12px;
             font-size: 14px;
             line-height: 1.4;
-            color: #666;
+            color: #333;
         }
 
         .ingredient-grid {
@@ -10967,7 +10967,7 @@ HTML = """
             margin: 8px 0 12px;
             font-size: 13px;
             line-height: 1.5;
-            color: #666;
+            color: #333;
         }
 
         .ingredients {
@@ -11018,9 +11018,9 @@ HTML = """
     .sound-toggle {
         width: auto;
         padding: 9px 16px;
-        background: #fffdf9;
+        background: rgba(247, 243, 237, 0.72);
         color: #355e3b;
-        border: 1px solid #d8dfd5;
+        border: 1px solid rgba(53, 94, 59, 0.35);
         border-radius: 999px;
         font-size: 14px;
         font-weight: 600;
@@ -11043,7 +11043,7 @@ HTML = """
         margin-top: 8px;
         text-align: center;
         font-size: 12px;
-        color: #777;
+        color: #333;
     }
 
     .music-note a {
