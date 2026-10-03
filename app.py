@@ -10630,7 +10630,7 @@ HTML = """
 }
         body {
             font-family: Arial, sans-serif;
-            background: #f7f3ed;
+            background: #f7f3ed url('/static/in-the-pantry-background.png') center center / cover fixed no-repeat;
             margin: 0;
             padding: 20px;
         }
