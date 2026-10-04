@@ -1206,7 +1206,7 @@ def canonical_ingredient_identity(text):
         r"peeled|peel|trimmed|trim|browned|cooked|uncooked|"
         r"drained|rinsed|washed|roasted|baked|boiled|"
         r"sauteed|saute|sautéed|sauté|fried|grilled|"
-        r"seared|steamed|thawed|softened|melted|reserved|"
+        r"seared|steamed|frozen|defrosted|thawed|softened|melted|reserved|"
         r"divided|for\s+garnish|for\s+serving|as\s+needed|"
         r"to\s+taste)\b\s*",
         "",
@@ -8572,6 +8572,55 @@ def extract_ingredient_identity(text):
                     return f"{prefix} {product_identity}"
 
     result = _extract_ingredient_identity_base(text)
+
+    # -------------------------------------------------------------
+    # UNIVERSAL NO-INVENTION GUARD
+    # -------------------------------------------------------------
+    # The authoritative extractor may return source text unchanged when
+    # it cannot establish a real ingredient identity.  Do not allow that
+    # arbitrary source wording to become an ingredient requirement.
+    #
+    # A result is allowed through unchanged only when it is an established
+    # ingredient identity or an explicit alias target.  Otherwise the
+    # extractor must return no identity.
+    # -------------------------------------------------------------
+    if isinstance(text, str) and isinstance(result, str):
+        _source_clean = re.sub(r"\\s+", " ", text.strip().lower())
+        _result_clean = re.sub(r"\\s+", " ", result.strip().lower())
+
+        if _result_clean == _source_clean:
+            _known_identity_values = set()
+
+            for _source_name in (
+                "CORE_INGREDIENTS",
+                "COMMON_INGREDIENTS",
+                "PANTRY_STAPLES",
+                "_INGREDIENT_ALIAS_TARGETS",
+            ):
+                _source_values = globals().get(_source_name)
+
+                if isinstance(_source_values, dict):
+                    _flattened = []
+                    for _value in _source_values.values():
+                        if isinstance(_value, (set, list, tuple)):
+                            _flattened.extend(_value)
+                        elif isinstance(_value, str):
+                            _flattened.append(_value)
+                    _source_values = _flattened
+
+                if _source_values:
+                    for _value in _source_values:
+                        if isinstance(_value, str) and _value.strip():
+                            _known_identity_values.add(
+                                re.sub(
+                                    r"\\s+",
+                                    " ",
+                                    _value.strip().lower(),
+                                )
+                            )
+
+            if _result_clean not in _known_identity_values:
+                return ""
 
     # Final universal guard against scraper metadata becoming an ingredient identity.
 
