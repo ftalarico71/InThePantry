@@ -6,6 +6,7 @@ import os
 import json
 import html as html_lib
 from dotenv import load_dotenv
+import spacy
 import posthog
 
 load_dotenv()
@@ -25,6 +26,23 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 RECIPE_CACHE = {}
+
+_INGREDIENT_NLP = None
+
+
+def _get_ingredient_nlp():
+    """Load the English NLP model once for recipe ingredient parsing."""
+    global _INGREDIENT_NLP
+
+    if _INGREDIENT_NLP is None:
+        _INGREDIENT_NLP = spacy.load(
+            "en_core_web_sm",
+            disable=["ner", "textcat"],
+        )
+
+    return _INGREDIENT_NLP
+
+
 # ---------------------------------------------------------
 # PANTRY STAPLES
 # These don't count as ingredients the user needs to buy.
@@ -6714,257 +6732,219 @@ def clean_recipe_ingredient_metadata(text):
 
 def _preserve_recipe_source_identity(text):
     """
-    Extract the ingredient identity supplied by the actual recipe source.
+    Extract the ingredient identity from an actual recipe ingredient line.
 
-    Recipe identity and pantry compatibility are separate concerns.
+    The recipe source is authoritative.  This function does NOT consult
+    CORE_INGREDIENTS, COMMON_INGREDIENTS, ingredient aliases, or pantry
+    matching rules to decide what the recipe ingredient is.
 
-    Quantity, measurement, preparation instructions, usage instructions,
-    and descriptive/state metadata are removed.  The meaningful ingredient
-    noun or noun phrase supplied by the recipe is preserved.
+    The job is grammatical:
+        recipe ingredient line
+            -> remove quantity / measurement / preparation wording
+            -> identify the noun phrase
+            -> return the ingredient noun phrase
 
     Examples:
-        beef broth
-        beef chuck roast
-        ground beef
-        cream of mushroom soup
-        yellow onion
-        red wine
-        olive oil
-        plant-based cheddar cheese
+        "1 cup beef broth" -> "beef broth"
+        "1 cup red wine, I use merlot or cabernet sauvignon" -> "red wine"
+        "2 cloves garlic, minced" -> "garlic"
+        "4 sprigs fresh rosemary" -> "rosemary"
+        "1 can cream of mushroom soup" -> "cream of mushroom soup"
+        "2 cinnamon sticks" -> "cinnamon sticks"
+        "1 cup chocolate chips" -> "chocolate chips"
+
+    spaCy supplies the grammatical noun/noun-phrase analysis.  The small
+    structural cleanup before parsing removes recipe-specific quantity and
+    preparation syntax without maintaining an ingredient dictionary.
     """
 
     if not isinstance(text, str):
         return ""
 
+    text = html_lib.unescape(text)
+    text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
 
     if not text:
         return ""
 
-    # Remove parenthetical quantity/package/instruction information.
+    # Parenthetical material is normally quantity, package size, or
+    # preparation/editorial information rather than ingredient identity.
     text = re.sub(r"\([^()]*\)", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
 
-    # Remove comma-separated preparation instructions.
+    # Alternatives are handled by normalize_recipe_ingredient().  For the
+    # individual source phrase, keep only the ingredient side of common
+    # comma-separated recipe prose.  Do not use a list of ingredient names.
+    text = re.split(
+        r"\s*,\s*(?=(?:"
+        r"i\s+use|we\s+use|you\s+can\s+use|"
+        r"or\s+use|such\s+as|"
+        r"finely|roughly|thinly|coarsely|"
+        r"freshly|peeled|diced|chopped|minced|sliced|"
+        r"cubed|quartered|halved|trimmed|grated|"
+        r"shredded|crushed|rinsed|washed|drained|"
+        r"beaten|whisked|melted|softened|divided|"
+        r"at\s+room\s+temperature|to\s+taste|for\s+serving|"
+        r"plus|as\s+needed"
+        r")\b)",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+
+    # Remove trailing preparation clauses introduced with a comma even when
+    # the scraper omitted the expected cue word.
     text = re.sub(
-        r"\s*,\s*(?:"
-        r"finely\s+|roughly\s+|thinly\s+|coarsely\s+|"
-        r"very\s+finely\s+|"
-        r")?"
-        r"(?:sliced|diced|chopped|minced|cubed|quartered|"
-        r"halved|peeled|trimmed|grated|shredded|crushed|"
-        r"rinsed|washed|drained|beaten|whisked)\b.*$",
+        r"\s*,\s*(?:finely|roughly|thinly|coarsely|freshly|"
+        r"peeled|diced|chopped|minced|sliced|cubed|quartered|"
+        r"halved|trimmed|grated|shredded|crushed|rinsed|washed|"
+        r"drained|beaten|whisked|melted|softened|divided)\b.*$",
         "",
         text,
         flags=re.IGNORECASE,
     )
 
-    # Remove comma-separated descriptive/state metadata that appears
-    # after the ingredient noun.
-    #
-    # Examples:
-    #   red wine, dry, full-bodied -> red wine
-    #   beef broth, low-sodium    -> beef broth
-    text = re.sub(
-        r"\s*,\s*(?:"
-        r"dry|full[-\s]+bodied|"
-        r"large|small|medium|petite|jumbo|"
-        r"boneless|skinless|unsalted|salted|"
-        r"low[-\s]+sodium|reduced[-\s]+sodium|"
-        r"extra[-\s]+virgin|canned|fresh|freshly|dried|"
-        r"warm|hot|cold|chilled"
-        r")"
-        r"(?:\s*,\s*(?:"
-        r"dry|full[-\s]+bodied|"
-        r"large|small|medium|petite|jumbo|"
-        r"boneless|skinless|unsalted|salted|"
-        r"low[-\s]+sodium|reduced[-\s]+sodium|"
-        r"extra[-\s]+virgin|canned|fresh|freshly|dried|"
-        r"warm|hot|cold|chilled"
-        r"))*"
-        r"\s*$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove multi-word preparation phrases.
-    text = re.sub(
-        r"\b(?:"
-        r"finely|roughly|thinly|coarsely|freshly"
-        r")\s+"
-        r"(?:squeezed|grated|minced|chopped|diced|sliced|"
-        r"shredded|crushed|zested|juiced)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove standalone preparation words.
-    text = re.sub(
-        r"\b(?:"
-        r"squeezed|minced|chopped|diced|sliced|cubed|"
-        r"quartered|halved|peeled|trimmed|grated|shredded|"
-        r"crushed|zested|juiced|rinsed|washed|drained|"
-        r"beaten|whisked"
-        r")\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove quantities, including mixed numbers.
+    # Strip leading quantity expressions, including mixed numbers and
+    # Unicode fractions.
     text = re.sub(
         r"^\s*(?:"
         r"\d+\s+\d+/\d+|"
         r"\d+/\d+|"
         r"\d+(?:\.\d+)?|"
-        r"[¼½¾⅓⅔⅛⅜⅝⅞]"
-        r")\s*",
+        r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]"
+        r")\s*(?:[-–—]\s*)?",
         "",
         text,
     )
 
-    # Remove measurement/container words at the beginning.
+    # Strip measurement/container expressions at the beginning.  "cloves"
+    # and "sprigs" are quantity/form words here, not ingredient identities.
     text = re.sub(
         r"^\s*(?:"
-        r"cups?|tablespoons?|tbsp|teaspoons?|tsp|"
-        r"pounds?|lbs?|ounces?|oz|"
-        r"grams?|g|kilograms?|kg|"
+        r"cups?|tablespoons?|tbsp|tbs|teaspoons?|tsp|"
+        r"pounds?|lbs?|ounces?|oz|grams?|g|kilograms?|kg|"
+        r"milliliters?|ml|liters?|litres?|l|"
         r"cloves?|cans?|packages?|packets?|"
-        r"bottles?|jars?|sticks?|sprigs?|"
-        r"stalks?"
-        r")\b\.?\s*",
+        r"bottles?|jars?|sticks?|sprigs?|stalks?|"
+        r"heads?|bunches?|pieces?|slices?|strips?|"
+        r"wedges?|chunks?|fillets?|"
+        r"pinches?|handfuls?|dashes?"
+        r")\b\.?\s*(?:of\s+)?",
         "",
         text,
         flags=re.IGNORECASE,
     )
 
-    # Remove articles/container constructions left after quantity cleanup.
-    text = re.sub(
-        r"^\s*(?:of|a|an|the)\s+",
-        "",
+    text = re.sub(r"^\s*(?:of|a|an|the)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,.-")
+
+    if not text:
+        return ""
+
+    # Standalone preparation/state metadata can never be an ingredient.
+    if re.fullmatch(
+        r"(?:fine|coarse|large|medium|small|fresh|freshly|"
+        r"dry|dried|warm|hot|cold|chilled|softened|melted)",
         text,
         flags=re.IGNORECASE,
-    )
+    ):
+        return ""
 
-    # Remove usage/purpose phrases.
-    text = re.sub(
-        r"\s+(?:for|to)\s+"
-        r"(?:frying|browning|serving|garnish|garnishing|"
-        r"taste|cooking|cooked|marinating|marinade)\b.*$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
+    # Try grammatical noun-phrase extraction first.
+    #
+    # The model is loaded lazily so importing app.py remains cheap and the
+    # web application does not pay model startup cost until recipe matching.
+    try:
+        nlp = _get_ingredient_nlp()
+        doc = nlp(text)
 
-    # Remove descriptive/state metadata wherever it occurs.
+        candidates = [
+            chunk
+            for chunk in doc.noun_chunks
+            if chunk.text.strip()
+        ]
+
+        if candidates:
+            # Prefer the largest noun phrase that contains the syntactic
+            # head of the ingredient.  This preserves genuine compounds:
+            # "beef broth", "cream of mushroom soup", "chocolate chips".
+            #
+            # If a trailing noun is a common preparation/form noun, remove
+            # that grammatical modifier unless it is part of a lexical
+            # compound.  This is structural, not ingredient-specific.
+            best = max(
+                candidates,
+                key=lambda chunk: (
+                    len(chunk.text.split()),
+                    chunk.end - chunk.start,
+                ),
+            )
+
+            phrase = best.text.strip()
+
+            # If spaCy parsed an introductory determiner, remove it.
+            phrase = re.sub(
+                r"^\s*(?:a|an|the)\s+",
+                "",
+                phrase,
+                flags=re.IGNORECASE,
+            )
+
+            # Recipe form words which normally represent how an ingredient
+            # is portioned/prepared rather than a different ingredient.
+            # Keep a form word when it functions as a recognized compound
+            # noun (e.g. cinnamon sticks, chocolate chips).
+            form_words = {
+                "clove", "cloves",
+                "sprig", "sprigs",
+                "stalk", "stalks",
+                "slice", "slices",
+                "strip", "strips",
+                "wedge", "wedges",
+                "chunk", "chunks",
+                "piece", "pieces",
+                "stick", "sticks",
+            }
+
+            words = phrase.split()
+            if len(words) > 1 and words[-1].lower() in form_words:
+                head = doc[best.root.i]
+                last = words[-1].lower()
+
+                # A lexical compound is retained when the parser links the
+                # form noun as a compound modifier rather than a mere
+                # quantity/preparation construction.
+                compound_like = any(
+                    token.dep_ in {"compound", "amod"}
+                    and token.head == head
+                    for token in best
+                )
+
+                if last not in {"stick", "sticks"} or not compound_like:
+                    phrase = " ".join(words[:-1])
+
+            phrase = re.sub(r"\s+", " ", phrase).strip(" ,.-")
+
+            if phrase:
+                return phrase.lower()
+
+    except Exception as exc:
+        # Never let optional NLP infrastructure prevent recipe matching.
+        print("Ingredient NLP fallback:", exc)
+
+    # Conservative structural fallback if the NLP model is unavailable.
+    # This is deliberately generic and does not contain ingredient names.
     text = re.sub(
-        r"\b(?:"
-        r"large|small|medium|extra[-\s]+large|extra[-\s]+small|"
-        r"jumbo|petite|boneless|skinless|unsalted|salted|"
-        r"low[-\s]+sodium|reduced[-\s]+sodium|"
-        r"extra[-\s]+virgin|full[-\s]+bodied|"
-        r"canned|fresh|freshly|dried|"
-        r"warm|hot|cold|chilled"
-        r")\b",
+        r"\b(?:finely|roughly|thinly|coarsely|freshly|"
+        r"peeled|diced|chopped|minced|sliced|cubed|quartered|"
+        r"halved|trimmed|grated|shredded|crushed|rinsed|washed|"
+        r"drained|beaten|whisked|melted|softened)\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
-
-    # "dry red wine" -> "red wine".
-    text = re.sub(
-        r"\bdry\s+(?=(?:red|white|rosé|rose|sparkling)\s+wine\b)",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove remaining leading articles.
-    text = re.sub(
-        r"^\s*(?:a|an|the)\s+",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Preserve grammatical compound ingredient names.
-    text = re.sub(
-        r"\bcream\s+(mushroom|chicken|celery|tomato)\s+soup\b",
-        r"cream of \1 soup",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Preserve plant-based as part of the ingredient identity.
-    text = re.sub(
-        r"\bplant\s+based\b",
-        "plant-based",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # -------------------------------------------------------------
-    # NOUN / NOUN-PHRASE IDENTITY
-    # -------------------------------------------------------------
-    # The recipe ingredient itself is authoritative.  Keep the actual
-    # ingredient noun or noun phrase, but remove words that describe
-    # how that ingredient is cut or prepared.
-    #
-    # Preparation/form words:
-    #   apple slices       -> apple
-    #   tortilla strips    -> tortilla
-    #   potato wedges      -> potato
-    #   celery sticks      -> celery
-    #   carrot sticks      -> carrot
-    #   rosemary sprigs    -> rosemary
-    #
-    # Genuine ingredient forms remain intact:
-    #   cinnamon sticks    -> cinnamon sticks
-    #   bay leaves         -> bay leaves
-    #   chocolate chips    -> chocolate chips
-    #
-    # This is deliberately structural rather than ingredient-by-ingredient.
-    # "cinnamon sticks" is a genuine purchasable ingredient form, while
-    # "apple slices" describes preparation of an apple.
-    #
-    # "sticks" needs one structural distinction because it can mean either
-    # a preparation shape or a genuine ingredient form.
-    if re.search(
-        r"\b(?:slices?|strips?|wedges?|sprigs?|stalks?|pieces?|chunks?)\s*$",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        text = re.sub(
-            r"\s+(?:slices?|strips?|wedges?|sprigs?|stalks?|pieces?|chunks?)\s*$",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-
-    elif re.search(
-        r"\bsticks?\s*$",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        # Cinnamon stick is a real ingredient form.  Other common
-        # "X sticks" constructions in recipe ingredient lists are
-        # normally preparation/cutting descriptions.
-        if not re.search(
-            r"\bcinnamon\s+sticks?\s*$",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            text = re.sub(
-                r"\s+sticks?\s*$",
-                "",
-                text,
-                flags=re.IGNORECASE,
-            )
-
-    # Final cleanup.
-    text = re.sub(r"[^A-Za-zÀ-ÿ0-9' -]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip(" -,")
+    text = re.sub(r"\s+", " ", text).strip()
 
     return text.lower()
 
