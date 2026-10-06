@@ -6,7 +6,6 @@ import os
 import json
 import html as html_lib
 from dotenv import load_dotenv
-import spacy
 import posthog
 
 load_dotenv()
@@ -26,22 +25,6 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 RECIPE_CACHE = {}
-
-_INGREDIENT_NLP = None
-
-
-def _get_ingredient_nlp():
-    """Load the English NLP model once for recipe ingredient parsing."""
-    global _INGREDIENT_NLP
-
-    if _INGREDIENT_NLP is None:
-        _INGREDIENT_NLP = spacy.load(
-            "en_core_web_sm",
-            disable=["ner", "textcat"],
-        )
-
-    return _INGREDIENT_NLP
-
 
 # ---------------------------------------------------------
 # PANTRY STAPLES
@@ -6732,32 +6715,23 @@ def clean_recipe_ingredient_metadata(text):
 
 def _preserve_recipe_source_identity(text):
     """
-    Extract the ingredient identity from an actual recipe ingredient line.
+    Extract the ingredient identity directly from one actual recipe
+    ingredient line.
 
-    The recipe source is authoritative.  This function does NOT consult
-    CORE_INGREDIENTS, COMMON_INGREDIENTS, ingredient aliases, or pantry
-    matching rules to decide what the recipe ingredient is.
+    The recipe source is authoritative.  This layer is deliberately
+    independent of CORE_INGREDIENTS, aliases, pantry contents, or
+    ingredient-specific exceptions.
 
-    The job is grammatical:
-        recipe ingredient line
-            -> remove quantity / measurement / preparation wording
-            -> identify the noun phrase
-            -> return the ingredient noun phrase
+    Pipeline:
+        raw recipe ingredient
+            -> remove quantities / containers
+            -> remove preparation/editorial wording
+            -> keep the remaining noun phrase
+            -> return that source identity
 
-    Examples:
-        "1 cup beef broth" -> "beef broth"
-        "1 cup red wine, I use merlot or cabernet sauvignon" -> "red wine"
-        "2 cloves garlic, minced" -> "garlic"
-        "4 sprigs fresh rosemary" -> "rosemary"
-        "1 can cream of mushroom soup" -> "cream of mushroom soup"
-        "2 cinnamon sticks" -> "cinnamon sticks"
-        "1 cup chocolate chips" -> "chocolate chips"
-
-    spaCy supplies the grammatical noun/noun-phrase analysis.  The small
-    structural cleanup before parsing removes recipe-specific quantity and
-    preparation syntax without maintaining an ingredient dictionary.
+    The goal is not to guess ingredients.  It is to preserve the noun
+    phrase that the recipe actually supplied.
     """
-
     if not isinstance(text, str):
         return ""
 
@@ -6768,69 +6742,106 @@ def _preserve_recipe_source_identity(text):
     if not text:
         return ""
 
-    # Parenthetical material is normally quantity, package size, or
-    # preparation/editorial information rather than ingredient identity.
+    # Parentheses in recipe ingredient lines are normally package size,
+    # quantity, or preparation notes.
     text = re.sub(r"\([^()]*\)", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
 
-    # Alternatives are handled by normalize_recipe_ingredient().  For the
-    # individual source phrase, keep only the ingredient side of common
-    # comma-separated recipe prose.  Do not use a list of ingredient names.
-    text = re.split(
-        r"\s*,\s*(?=(?:"
-        r"i\s+use|we\s+use|you\s+can\s+use|"
-        r"or\s+use|such\s+as|"
-        r"finely|roughly|thinly|coarsely|"
-        r"freshly|peeled|diced|chopped|minced|sliced|"
-        r"cubed|quartered|halved|trimmed|grated|"
-        r"shredded|crushed|rinsed|washed|drained|"
-        r"beaten|whisked|melted|softened|divided|"
-        r"at\s+room\s+temperature|to\s+taste|for\s+serving|"
-        r"plus|as\s+needed"
-        r")\b)",
-        text,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
+    # A comma in a recipe ingredient line normally introduces a
+    # preparation/editorial qualifier:
+    #
+    #   red wine, I use Merlot or Cabernet Sauvignon -> red wine
+    #   garlic, minced -> garlic
+    #   tomatoes, drained -> tomatoes
+    #
+    # The first segment is therefore the source ingredient phrase.
+    # This is structural and does not depend on an ingredient dictionary.
+    if "," in text:
+        text = text.split(",", 1)[0].strip()
 
-    # Remove trailing preparation clauses introduced with a comma even when
-    # the scraper omitted the expected cue word.
+    if ";" in text:
+        text = text.split(";", 1)[0].strip()
+
+    # Remove leading quantities, including fractions and ranges.
+    quantity = (
+        r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?|"
+        r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])"
+    )
     text = re.sub(
-        r"\s*,\s*(?:finely|roughly|thinly|coarsely|freshly|"
-        r"peeled|diced|chopped|minced|sliced|cubed|quartered|"
-        r"halved|trimmed|grated|shredded|crushed|rinsed|washed|"
-        r"drained|beaten|whisked|melted|softened|divided)\b.*$",
+        rf"^\s*{quantity}\s*(?:[-–—]\s*)?",
         "",
         text,
         flags=re.IGNORECASE,
     )
 
-    # Strip leading quantity expressions, including mixed numbers and
-    # Unicode fractions.
-    text = re.sub(
-        r"^\s*(?:"
-        r"\d+\s+\d+/\d+|"
-        r"\d+/\d+|"
-        r"\d+(?:\.\d+)?|"
-        r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]"
-        r")\s*(?:[-–—]\s*)?",
-        "",
-        text,
-    )
-
-    # Strip measurement/container expressions at the beginning.  "cloves"
-    # and "sprigs" are quantity/form words here, not ingredient identities.
+    # Remove recipe measuring/container words.  These are not part of
+    # the ingredient noun phrase.
     text = re.sub(
         r"^\s*(?:"
         r"cups?|tablespoons?|tbsp|tbs|teaspoons?|tsp|"
         r"pounds?|lbs?|ounces?|oz|grams?|g|kilograms?|kg|"
         r"milliliters?|ml|liters?|litres?|l|"
-        r"cloves?|cans?|packages?|packets?|"
-        r"bottles?|jars?|sticks?|sprigs?|stalks?|"
-        r"heads?|bunches?|pieces?|slices?|strips?|"
-        r"wedges?|chunks?|fillets?|"
-        r"pinches?|handfuls?|dashes?"
+        r"cans?|packages?|packets?|bottles?|jars?|"
+        r"heads?|bunches?|pinches?|handfuls?|dashes?|"
+        r"cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?"
         r")\b\.?\s*(?:of\s+)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Some sources put the unit before the quantity/container wording.
+    text = re.sub(
+        r"^\s*(?:"
+        r"one|two|three|four|five|six|seven|eight|nine|ten"
+        r")\s+(?:"
+        r"cups?|tablespoons?|tbsp|teaspoons?|tsp|"
+        r"pounds?|lbs?|ounces?|oz|grams?|g|kg|ml|liters?|"
+        r"cans?|packages?|jars?|bunches?|cloves?|sprigs?|stalks?"
+        r")\b\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove leading preparation/state descriptors.  These describe the
+    # ingredient rather than replacing its noun phrase.
+    leading_descriptors = (
+        r"freshly|fresh|dried|dry|frozen|thawed|cooked|raw|ripe|"
+        r"peeled|unpeeled|seeded|deseeded|cored|halved|quartered|"
+        r"chopped|diced|minced|sliced|cubed|grated|shredded|crushed|"
+        r"mashed|drained|rinsed|washed|softened|melted|beaten|whisked|"
+        r"divided|packed|firmly\s+packed|"
+        r"finely|roughly|thinly|coarsely|"
+        r"boneless|skinless|bone[- ]in|skin[- ]on|skin[- ]off"
+    )
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(
+            rf"^\s*(?:{leading_descriptors})\s+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    # Remove common editorial/preparation tails that can occur without
+    # a comma.  Only generic action/context words are used here.
+    text = re.sub(
+        r"\s+(?:for|to)\s+(?:"
+        r"frying|browning|cooking|serving|garnish|garnishing|"
+        r"drizzling|drizzle|greasing|brushing|sauteing|sautéing|"
+        r"topping|seasoning"
+        r")(?:\s+.*)?$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove trailing form/count words when they describe how the
+    # ingredient is portioned rather than identifying a different food.
+    text = re.sub(
+        r"\s+(?:cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)$",
         "",
         text,
         flags=re.IGNORECASE,
@@ -6842,214 +6853,83 @@ def _preserve_recipe_source_identity(text):
     if not text:
         return ""
 
-    # Standalone preparation/state metadata can never be an ingredient.
+    # Standalone preparation words are never ingredient identities.
     if re.fullmatch(
         r"(?:fine|coarse|large|medium|small|fresh|freshly|"
-        r"dry|dried|warm|hot|cold|chilled|softened|melted)",
+        r"dry|dried|warm|hot|cold|chilled|softened|melted|"
+        r"chopped|diced|minced|sliced|grated|shredded|crushed|"
+        r"drained|rinsed|washed|divided|optional)",
         text,
         flags=re.IGNORECASE,
     ):
         return ""
 
-    # Try grammatical noun-phrase extraction first.
-    #
-    # The model is loaded lazily so importing app.py remains cheap and the
-    # web application does not pay model startup cost until recipe matching.
-    try:
-        nlp = _get_ingredient_nlp()
-        doc = nlp(text)
-
-        candidates = [
-            chunk
-            for chunk in doc.noun_chunks
-            if chunk.text.strip()
-        ]
-
-        if candidates:
-            # Prefer the largest noun phrase that contains the syntactic
-            # head of the ingredient.  This preserves genuine compounds:
-            # "beef broth", "cream of mushroom soup", "chocolate chips".
-            #
-            # If a trailing noun is a common preparation/form noun, remove
-            # that grammatical modifier unless it is part of a lexical
-            # compound.  This is structural, not ingredient-specific.
-            best = max(
-                candidates,
-                key=lambda chunk: (
-                    len(chunk.text.split()),
-                    chunk.end - chunk.start,
-                ),
-            )
-
-            phrase = best.text.strip()
-
-            # If spaCy parsed an introductory determiner, remove it.
-            phrase = re.sub(
-                r"^\s*(?:a|an|the)\s+",
-                "",
-                phrase,
-                flags=re.IGNORECASE,
-            )
-
-            # Recipe form words which normally represent how an ingredient
-            # is portioned/prepared rather than a different ingredient.
-            # Keep a form word when it functions as a recognized compound
-            # noun (e.g. cinnamon sticks, chocolate chips).
-            form_words = {
-                "clove", "cloves",
-                "sprig", "sprigs",
-                "stalk", "stalks",
-                "slice", "slices",
-                "strip", "strips",
-                "wedge", "wedges",
-                "chunk", "chunks",
-                "piece", "pieces",
-                "stick", "sticks",
-            }
-
-            words = phrase.split()
-            if len(words) > 1 and words[-1].lower() in form_words:
-                head = doc[best.root.i]
-                last = words[-1].lower()
-
-                # A lexical compound is retained when the parser links the
-                # form noun as a compound modifier rather than a mere
-                # quantity/preparation construction.
-                compound_like = any(
-                    token.dep_ in {"compound", "amod"}
-                    and token.head == head
-                    for token in best
-                )
-
-                if last not in {"stick", "sticks"} or not compound_like:
-                    phrase = " ".join(words[:-1])
-
-            phrase = re.sub(r"\s+", " ", phrase).strip(" ,.-")
-
-            if phrase:
-                return phrase.lower()
-
-    except Exception as exc:
-        # Never let optional NLP infrastructure prevent recipe matching.
-        print("Ingredient NLP fallback:", exc)
-
-    # Conservative structural fallback if the NLP model is unavailable.
-    # This is deliberately generic and does not contain ingredient names.
-    text = re.sub(
-        r"\b(?:finely|roughly|thinly|coarsely|freshly|"
-        r"peeled|diced|chopped|minced|sliced|cubed|quartered|"
-        r"halved|trimmed|grated|shredded|crushed|rinsed|washed|"
-        r"drained|beaten|whisked|melted|softened)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(r"\s+", " ", text).strip()
-
     return text.lower()
 
+
 def normalize_recipe_ingredient(text, preserve_source=False):
-    if not text:
-        return '', []
-
-    # Protect half-and-half before metadata cleanup can split or
-    # otherwise collapse the compound ingredient.
-    if isinstance(text, str):
-        half_check = text.strip().lower().replace("-", " ")
-        if "half and half" in half_check:
-            return "half-and-half", []
-
-    text = clean_recipe_ingredient_metadata(text)
-
     if not text:
         return '', []
 
     # -------------------------------------------------------------
     # SOURCE-FIRST RECIPE IDENTITY
     # -------------------------------------------------------------
-    # When the caller is processing an actual recipe ingredient,
-    # the recipe source is authoritative.
-    #
-    # Do NOT run the legacy vocabulary/metadata normalization first.
-    # That older path can transform:
-    #
-    #   butter for frying          -> butter frying
-    #   vegetable oil for browning -> vegetable oil browning
-    #   red wine, dry              -> red wine dry
-    #
-    # The source noun-phrase extractor must receive the cleaned
-    # recipe ingredient before any canonical ingredient processing.
-    #
-    # Normal pantry/input normalization continues through the existing
-    # code path below when preserve_source=False.
+    # Actual recipe ingredient text is authoritative.  Do not run
+    # the legacy metadata/canonical identity pipeline before extracting
+    # the noun phrase: that is what previously turned valid source
+    # identities such as "beef broth" into "beef".
     # -------------------------------------------------------------
-
     if preserve_source:
-        source_text = text.strip()
+        source_text = str(text).strip()
 
-        # Reuse the existing universal staple filter before applying
-        # source-first noun-phrase extraction.  The normalizer already
-        # knows that salt/pepper/water variants are not recipe
-        # requirements.  The source-first path must not bypass that rule.
-        staple_probe, staple_probe_alternatives = normalize_recipe_ingredient(
-            source_text,
-            preserve_source=False,
-        )
-
-        if not staple_probe and not staple_probe_alternatives:
+        if not source_text:
             return '', []
 
-        # Preserve recipe-site OR alternatives as one requirement.
-        # The noun-phrase extractor is applied independently to each
-        # side so preparation/descriptive wording cannot leak across
-        # the alternatives.
-        source_alternatives = []
+        # Keep the special compound intact.
+        if re.fullmatch(
+            r"half[-\s]+and[-\s]+half",
+            source_text,
+            flags=re.IGNORECASE,
+        ):
+            return "half-and-half", []
 
-        slash_parts = re.split(
-            r'\s+ZZSLASHALTZZ\s+',
+        # Recipe-site alternatives are separate source phrases, but each
+        # side remains ONE ingredient requirement.
+        source_parts = re.split(
+            r"\s+(?:or)\s+|(?<!\d)\s*/\s*(?!\d)",
             source_text,
             flags=re.IGNORECASE,
         )
 
-        or_parts = []
+        identities = []
 
-        for slash_part in slash_parts:
-            or_parts.extend(
-                re.split(
-                    r'\s+\bor\b\s+',
-                    slash_part,
-                    flags=re.IGNORECASE,
-                )
-            )
-
-        for part in or_parts:
-            part = part.strip()
-
-            if not part:
-                continue
-
-            identity = _preserve_recipe_source_identity(part)
+        for source_part in source_parts:
+            identity = _preserve_recipe_source_identity(source_part)
 
             if not identity:
                 continue
 
-            if (
-                identity.lower()
-                not in {
-                    existing.lower()
-                    for existing in source_alternatives
-                }
-            ):
-                source_alternatives.append(identity)
+            # Universal pantry staples are filtered here without asking
+            # the ingredient vocabulary to identify the source phrase.
+            if identity.lower() in {
+                "salt", "pepper", "black pepper", "kosher salt",
+                "sea salt", "water",
+            }:
+                continue
 
-        if not source_alternatives:
+            if identity.lower() not in {
+                existing.lower() for existing in identities
+            }:
+                identities.append(identity)
+
+        if not identities:
             return '', []
 
-        primary = source_alternatives[0]
-        alternatives = source_alternatives[1:]
+        return identities[0], identities[1:]
 
-        return primary, alternatives
-
+    # -------------------------------------------------------------
+    # NORMAL PANTRY / USER-INPUT NORMALIZATION
+    # -------------------------------------------------------------
     # Protect half-and-half before any later "and" splitting or
     # grammatical cleanup can turn it into "half".
     if re.fullmatch(
