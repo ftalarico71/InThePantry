@@ -6775,7 +6775,7 @@ def _preserve_recipe_source_identity(text):
             r"kilograms?|kg|milliliters?|ml|liters?|litres?|l|"
             r"cans?|packages?|packets?|bottles?|jars?|heads?|"
             r"bunches?|pinches?|handfuls?|dashes?|cloves?|sprigs?|"
-            r"stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)\\b",
+            r"stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)\b",
             text,
             flags=re.IGNORECASE,
         )
