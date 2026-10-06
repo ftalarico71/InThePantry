@@ -819,25 +819,49 @@ def extract_recipe_ingredient_noun_phrase(raw_text):
         r"piece|pieces"
     )
 
-    # Remove a measurement/container only when it is at the beginning.
-    # "cinnamon sticks" therefore remains a noun phrase.
-    text = re.sub(
-        rf"^\s*(?:{measure_words})\s+(?:of\s+)?",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    )
+    # Remove quantity + measurement/container layers repeatedly from
+    # the beginning of the source text.
+    #
+    # This handles recipe wording such as:
+    #
+    #   14 1/2 ounces can petite diced tomatoes
+    #       -> petite diced tomatoes
+    #
+    # and:
+    #
+    #   1 1/2 cups plus 1 tablespoon flour
+    #       -> plus 1 tablespoon flour
+    #
+    # The loop is structural: it removes however many leading
+    # quantity/measurement/container layers the source provides.
+    previous = None
 
-    # A second quantity/measurement pair can occur in scraped recipe
-    # wording such as "1 1/2 cups plus 1 tablespoon flour".
-    text = re.sub(
-        rf"^\s*(?:{quantity})\s*(?:{measure_words})\s+(?:of\s+)?",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    )
+    while text and text != previous:
+        previous = text
+
+        text = re.sub(
+            rf"^\s*(?:{quantity})\s*(?:{measure_words})\s+(?:of\s+)?",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(
+            rf"^\s*(?:{quantity})\s*",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(
+            rf"^\s*(?:{measure_words})\s+(?:of\s+)?",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
     # Remove generic preparation adjectives/adverbs that precede the noun.
     # These are grammatical descriptors, not ingredient-specific rules.
@@ -849,7 +873,7 @@ def extract_recipe_ingredient_noun_phrase(raw_text):
         r"washed|softened|melted|beaten|whisked|divided|"
         r"finely|roughly|thinly|coarsely|"
         r"boneless|skinless|"
-        r"large|medium|small|extra-large|extra-small"
+        r"large|medium|small|petite|extra-large|extra-small"
     )
 
     previous = None
