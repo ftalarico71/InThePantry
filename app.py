@@ -6904,16 +6904,63 @@ def _preserve_recipe_source_identity(text):
         flags=re.IGNORECASE,
     )
 
-    # Remove trailing form/shape words when they are merely presentation
-    # descriptors rather than part of the ingredient identity.
-    text = re.sub(
-        r"\s+"
-        r"(?:sticks?|stalks?|sprigs?|pieces?|chunks?|wedges?|strips?)"
-        r"(?=\s*(?:,|$))",
-        "",
+    # -------------------------------------------------------------
+    # NOUN / NOUN-PHRASE IDENTITY
+    # -------------------------------------------------------------
+    # The recipe ingredient itself is authoritative.  Keep the actual
+    # ingredient noun or noun phrase, but remove words that describe
+    # how that ingredient is cut or prepared.
+    #
+    # Preparation/form words:
+    #   apple slices       -> apple
+    #   tortilla strips    -> tortilla
+    #   potato wedges      -> potato
+    #   celery sticks      -> celery
+    #   carrot sticks      -> carrot
+    #   rosemary sprigs    -> rosemary
+    #
+    # Genuine ingredient forms remain intact:
+    #   cinnamon sticks    -> cinnamon sticks
+    #   bay leaves         -> bay leaves
+    #   chocolate chips    -> chocolate chips
+    #
+    # This is deliberately structural rather than ingredient-by-ingredient.
+    # "cinnamon sticks" is a genuine purchasable ingredient form, while
+    # "apple slices" describes preparation of an apple.
+    #
+    # "sticks" needs one structural distinction because it can mean either
+    # a preparation shape or a genuine ingredient form.
+    if re.search(
+        r"\b(?:slices?|strips?|wedges?|sprigs?|stalks?|pieces?|chunks?)\s*$",
         text,
         flags=re.IGNORECASE,
-    )
+    ):
+        text = re.sub(
+            r"\s+(?:slices?|strips?|wedges?|sprigs?|stalks?|pieces?|chunks?)\s*$",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    elif re.search(
+        r"\bsticks?\s*$",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        # Cinnamon stick is a real ingredient form.  Other common
+        # "X sticks" constructions in recipe ingredient lists are
+        # normally preparation/cutting descriptions.
+        if not re.search(
+            r"\bcinnamon\s+sticks?\s*$",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            text = re.sub(
+                r"\s+sticks?\s*$",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
 
     # Final cleanup.
     text = re.sub(r"[^A-Za-zÀ-ÿ0-9' -]", " ", text)
