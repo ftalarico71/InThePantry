@@ -6813,7 +6813,8 @@ def _preserve_recipe_source_identity(text):
         r"mashed|drained|rinsed|washed|softened|melted|beaten|whisked|"
         r"divided|packed|firmly\s+packed|"
         r"finely|roughly|thinly|coarsely|"
-        r"boneless|skinless|bone[- ]in|skin[- ]on|skin[- ]off"
+        r"boneless|skinless|bone[- ]in|skin[- ]on|skin[- ]off|"
+        r"large|medium|small|extra[- ]large|extra[- ]small"
     )
     previous = None
     while previous != text:
