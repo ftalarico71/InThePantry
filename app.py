@@ -5837,9 +5837,39 @@ def search_web_recipes(user_ingredients, count=10):
     if not ingredients:
         return []
 
-    # Full-pantry search plus broader fallback queries for a single
-    # ingredient. A single checkbox such as "cream cheese", "ricotta",
-    # or "mozzarella" should not depend on one exact search phrase.
+    # -------------------------------------------------------------
+    # UNIVERSAL RECIPE DISCOVERY
+    # -------------------------------------------------------------
+    # Do NOT search for every pantry ingredient as one giant phrase.
+    # The search engine should discover recipes around strong pantry
+    # anchors; the actual recipe ingredient list is the source of truth
+    # for HAVE / NEED matching.
+    #
+    # Prefer a protein when the user has one. Otherwise use up to two
+    # meaningful pantry ingredients. This keeps discovery broad enough
+    # to find real recipes without spending a Brave search on every
+    # individual pantry item.
+    # -------------------------------------------------------------
+
+    selected_protein_terms = []
+
+    for item in ingredients:
+        for meat_options in MEAT_GROUPS.values():
+            if item in meat_options:
+                selected_protein_terms.append(item)
+                break
+
+    if selected_protein_terms:
+        discovery_anchors = selected_protein_terms[:2]
+    else:
+        discovery_anchors = [
+            item
+            for item in ingredients
+            if item not in {"salt", "pepper", "water"}
+        ][:2]
+
+    queries = []
+
     if len(ingredients) == 1:
         ingredient_query = ingredients[0]
 
@@ -5849,7 +5879,21 @@ def search_web_recipes(user_ingredients, count=10):
             "recipes with " + ingredient_query,
         ]
     else:
-        queries = [" ".join(ingredients) + " recipe"]
+        for anchor in discovery_anchors:
+            query = anchor + " recipe"
+            if query not in queries:
+                queries.append(query)
+
+        if len(discovery_anchors) >= 2:
+            combined_query = (
+                discovery_anchors[0]
+                + " "
+                + discovery_anchors[1]
+                + " recipe"
+            )
+
+            if combined_query not in queries:
+                queries.append(combined_query)
 
     # -------------------------------------------------------------
     # UNIVERSAL PLANT-BASED / VEGAN SEARCH DISCOVERY
@@ -5948,7 +5992,9 @@ def search_web_recipes(user_ingredients, count=10):
     )
 
     if selected_cheese:
-        queries = ["recipes with " + selected_cheese]
+        cheese_query = "recipes with " + selected_cheese
+        if cheese_query not in queries:
+            queries.append(cheese_query)
 
     # -------------------------------------------------------------
     # PLANT-BASED / VEGAN SEARCH EXPANSION
@@ -9894,8 +9940,11 @@ def find_recipes(
 
     # Search Brave using the ingredients the user entered.
     try:
+        # Recipe discovery must always be driven by the actual pantry.
+        # Search filters such as diet/cuisine must never replace the
+        # ingredients the user entered.
         search_results = search_web_recipes(
-            search_terms or user_ingredients,
+            user_ingredients,
             count=10
         )
     except Exception as e:
