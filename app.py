@@ -6767,6 +6767,20 @@ def _preserve_recipe_source_identity(text):
         r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?|"
         r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])"
     )
+    had_measurement_or_container = bool(
+        re.match(
+            r"^\s*" + quantity +
+            r"\s*(?:[-–—]\s*)?(?:cups?|tablespoons?|tbsp|tbs|"
+            r"teaspoons?|tsp|pounds?|lbs?|ounces?|oz|grams?|g|"
+            r"kilograms?|kg|milliliters?|ml|liters?|litres?|l|"
+            r"cans?|packages?|packets?|bottles?|jars?|heads?|"
+            r"bunches?|pinches?|handfuls?|dashes?|cloves?|sprigs?|"
+            r"stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)\\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
     text = re.sub(
         rf"^\s*{quantity}\s*(?:[-–—]\s*)?",
         "",
@@ -6847,6 +6861,14 @@ def _preserve_recipe_source_identity(text):
         text,
         flags=re.IGNORECASE,
     )
+
+    if had_measurement_or_container:
+        text = re.sub(
+            r"\s+sticks?$",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
 
     text = re.sub(r"^\s*(?:of|a|an|the)\s+", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip(" ,.-")
