@@ -5594,9 +5594,151 @@ def match_recipe_to_pantry(recipe, pantry_items):
                                 alternative
                             )
 
-            # Pantry staples never become requirements.
-            if primary in PANTRY_STAPLES:
+            # -------------------------------------------------
+            # UNIVERSAL PANTRY-STAPLE IDENTITY
+            # -------------------------------------------------
+            # Salt, pepper, and water are pantry staples even when
+            # the recipe uses descriptive forms such as:
+            #
+            #   kosher salt
+            #   sea salt
+            #   coarse sea salt
+            #   coarse kosher salt
+            #   black pepper
+            #   ground pepper
+            #
+            # Do not treat real ingredients such as "bell pepper"
+            # as staples merely because their final word is "pepper".
+            # -------------------------------------------------
+
+            staple_modifier_words = {
+                "coarse",
+                "fine",
+                "kosher",
+                "sea",
+                "table",
+                "pink",
+                "himalayan",
+                "black",
+                "white",
+                "fresh",
+                "freshly",
+                "ground",
+                "cracked",
+                "hot",
+                "warm",
+                "cold",
+                "boiling",
+                "boiled",
+                "filtered",
+                "distilled",
+                "room",
+                "temperature",
+            }
+
+            def _staple_head(option):
+                if not isinstance(option, str):
+                    return None
+
+                option = clean_word(option)
+
+                if not option:
+                    return None
+
+                if option in PANTRY_STAPLES:
+                    if "salt" in option:
+                        return "salt"
+                    if "pepper" in option:
+                        return "pepper"
+                    if option == "water":
+                        return "water"
+
+                words = option.split()
+
+                if not words:
+                    return None
+
+                head = words[-1]
+
+                if head not in {"salt", "pepper", "water"}:
+                    return None
+
+                if all(
+                    word in staple_modifier_words
+                    for word in words[:-1]
+                ):
+                    return head
+
+                return None
+
+            def _is_staple_modifier_phrase(option):
+                if not isinstance(option, str):
+                    return False
+
+                option = clean_word(option)
+
+                if not option:
+                    return False
+
+                words = option.split()
+
+                return bool(words) and all(
+                    word in staple_modifier_words
+                    for word in words
+                )
+
+            staple_options = [primary] + normalized_alternatives
+
+            staple_heads = [
+                _staple_head(option)
+                for option in staple_options
+            ]
+
+            # A standalone recognized staple is never a requirement.
+            standalone_staple = (
+                len(staple_options) == 1
+                and staple_heads
+                and staple_heads[0] is not None
+            )
+
+            if standalone_staple:
                 continue
+
+            # An OR group containing only staple identities and/or
+            # staple-only modifier fragments is still one pantry staple.
+            #
+            # Example:
+            #   coarse kosher or sea salt
+            #
+            # "coarse kosher" is a modifier-only fragment and "sea salt"
+            # is the actual staple identity, so the entire requirement
+            # disappears.
+            #
+            # But:
+            #   black pepper or bell pepper
+            #
+            # remains because "bell pepper" is a real ingredient, not
+            # a pepper-seasoning staple.
+            if len(staple_options) > 1:
+                group_is_staple = True
+                has_actual_staple = False
+
+                for option, head in zip(
+                    staple_options,
+                    staple_heads,
+                ):
+                    if head is not None:
+                        has_actual_staple = True
+                        continue
+
+                    if _is_staple_modifier_phrase(option):
+                        continue
+
+                    group_is_staple = False
+                    break
+
+                if group_is_staple and has_actual_staple:
+                    continue
 
             # -------------------------------------------------
             # ONE KEY PER OR GROUP
@@ -6977,6 +7119,7 @@ def _preserve_recipe_source_identity(text):
         r"washed|softened|melted|beaten|whisked|divided|"
         r"finely|roughly|thinly|coarsely|"
         r"boneless|skinless|large|medium|small|"
+        r"leftover|premium|strong|"
         r"extra-large|extra-small|whole|untrimmed|packer|"
         r"first-cut|second-cut|all-purpose|room-temperature"
     )
@@ -7059,7 +7202,7 @@ def _preserve_recipe_source_identity(text):
         r"melted|softened|beaten|whisked|cooked|"
         r"roasted|baked|boiled|fried|grilled|seared|steamed|"
         r"to\s+taste|as\s+needed|for\s+serving|for\s+garnish|"
-        r"for\s+frying|for\s+cooking|cut\s+into|cut\s+in|"
+        r"for\s+frying|for\s+cooking|for\s+topping|cut\s+into|cut\s+in|"
         r"left\s+whole|divided"
     )
 
@@ -7086,6 +7229,19 @@ def _preserve_recipe_source_identity(text):
         flags=re.IGNORECASE,
     )
 
+    # Remove editorial/example wording from a source ingredient line.
+    # Example:
+    #     ground mild chilies such as ancho or chimayo
+    # becomes:
+    #     ground mild chilies
+    text = re.sub(
+        r"\s+\bsuch\s+as\b.*$",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
     # -------------------------------------------------------------
     # FINAL CLEANUP
     # -------------------------------------------------------------
@@ -7106,6 +7262,22 @@ def _preserve_recipe_source_identity(text):
     )
 
     if not text:
+        return ""
+
+    # Some recipe sites place cooking equipment or smoking fuel inside
+    # the ingredient list. These are not grocery ingredient identities.
+    non_ingredient_patterns = (
+        r"^conveggtors?$",
+        r"\bwood\s+(?:smoking\s+)?chips?\b",
+        r"\bwood\s+chunks?\b",
+        r"\bsmoking\s+wood\b",
+        r"^blend\s+of\s+.+\bwood\b$",
+    )
+
+    if any(
+        re.search(pattern, text, flags=re.IGNORECASE)
+        for pattern in non_ingredient_patterns
+    ):
         return ""
 
     if re.fullmatch(
