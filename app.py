@@ -1934,10 +1934,11 @@ def ingredient_alias(text):
         "beef mince": "ground beef",
         "minced beef": "ground beef",
 
-        # Beef chuck roast and chuck roast are the same ingredient
-        # identity for matching purposes.
+        # Beef roast terms that represent the same roast identity
+        # for matching purposes.
         "beef chuck roast": "chuck roast",
         "chuck roast": "chuck roast",
+        "pot roast": "chuck roast",
 
         "fresh garlic": "garlic",
 
