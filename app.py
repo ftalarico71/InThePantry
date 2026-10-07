@@ -943,7 +943,18 @@ def extract_recipe_ingredient_noun_phrase(raw_text):
     ):
         return ""
 
-    return text.lower()
+    # Final universal source-identity cleanup.
+    #
+    # The noun extractor has already removed quantities, measurements,
+    # descriptors, and preparation tails. The source-identity cleaner
+    # performs the final punctuation/count cleanup so malformed source
+    # fragments can never reach matching or the user-facing display.
+    cleaned_identity = _preserve_recipe_source_identity(text)
+
+    if not cleaned_identity:
+        return ""
+
+    return cleaned_identity.lower()
 
 
 
@@ -7008,7 +7019,7 @@ def _preserve_recipe_source_identity(text):
 
     # Remove leading quantities, including fractions and ranges.
     quantity = (
-        r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?|"
+        r"(?:\d+\s+\d+/\d+|\d+\s*/\s*\d+|/\s*\d+|\d+/\d+|\d+(?:\.\d+)?|"
         r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])"
     )
     had_measurement_or_container = bool(
@@ -7066,6 +7077,7 @@ def _preserve_recipe_source_identity(text):
     # ingredient rather than replacing its noun phrase.
     leading_descriptors = (
         r"freshly|fresh|dried|dry|frozen|thawed|cooked|raw|ripe|"
+        r"warm|hot|cold|chilled|lukewarm|room[- ]temperature|"
         r"peeled|unpeeled|seeded|deseeded|cored|halved|quartered|"
         r"chopped|diced|minced|sliced|cubed|grated|shredded|crushed|"
         r"mashed|drained|rinsed|washed|softened|melted|beaten|whisked|"
@@ -7115,7 +7127,18 @@ def _preserve_recipe_source_identity(text):
         )
 
     text = re.sub(r"^\s*(?:of|a|an|the)\s+", "", text, flags=re.IGNORECASE)
+
+    # Remove unmatched scraper punctuation before trailing form/count cleanup.
+    text = re.sub(r"^[\(\[\{]+", "", text)
+    text = re.sub(r"[\)\]\}]+$", "", text)
     text = re.sub(r"\s+", " ", text).strip(" ,.-")
+    text = re.sub(
+        r"\s+(?:cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = text.strip(" ,.-")
 
     if not text:
         return ""
@@ -7132,7 +7155,6 @@ def _preserve_recipe_source_identity(text):
         return ""
 
     return text.lower()
-
 
 def normalize_recipe_ingredient(text, preserve_source=False):
     if not text:
