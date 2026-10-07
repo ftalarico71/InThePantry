@@ -724,272 +724,14 @@ def clean_word(text):
 # ---------------------------------------------------------
 
 def extract_recipe_ingredient_noun_phrase(raw_text):
-    if not isinstance(raw_text, str):
-        return ""
+    """
+    Universal recipe ingredient identity extractor.
 
-    text = html_lib.unescape(raw_text)
+    The actual recipe ingredient line is processed by the single
+    source-of-truth noun extractor.
+    """
+    return _preserve_recipe_source_identity(raw_text)
 
-    text = re.sub(
-        r"<[^>]+>",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if not text:
-        return ""
-
-    # Parenthetical recipe/editorial notes are not part of the ingredient
-    # noun phrase.
-    text = re.sub(r"\([^)]*\)", " ", text)
-
-    # A comma/semicolon normally separates the ingredient noun phrase
-    # from preparation or editorial prose.
-    text = re.split(r"\s*[;,]\s*", text, maxsplit=1)[0].strip()
-
-    if not text:
-        return ""
-
-    # Remove leading quantities, including:
-    #   1
-    #   1.5
-    #   1/2
-    #   1 1/2
-    #   ¾
-    #   1 ¾
-    quantity = (
-        r"(?:"
-        r"\d+(?:\.\d+)?(?:\s+\d+/\d+)?"
-        r"|"
-        r"\d+/\d+"
-        r"|"
-        r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]"
-        r")"
-    )
-
-    text = re.sub(
-        rf"^\s*{quantity}\s*",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove a remaining textual quantity.
-    text = re.sub(
-        r"^\s*(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten)"
-        r"\s+",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove measurement/container words. These describe how much of the
-    # ingredient was used, not the ingredient noun itself.
-    measure_words = (
-        r"cup|cups|c|"
-        r"tablespoon|tablespoons|tbsp|tb|tbs|"
-        r"teaspoon|teaspoons|tsp|"
-        r"pound|pounds|lb|lbs|"
-        r"ounce|ounces|oz|"
-        r"gram|grams|g|"
-        r"kilogram|kilograms|kg|"
-        r"milliliter|milliliters|millilitre|millilitres|ml|"
-        r"liter|liters|litre|litres|l|"
-        r"can|cans|"
-        r"package|packages|pkg|"
-        r"jar|jars|"
-        r"bottle|bottles|"
-        r"container|containers|"
-        r"pinch|pinches|"
-        r"dash|dashes|"
-        r"handful|handfuls|"
-        r"clove|cloves|"
-        r"head|heads|"
-        r"bunch|bunches|"
-        r"sprig|sprigs|"
-        r"stalk|stalks|"
-        r"slice|slices|"
-        r"strip|strips|"
-        r"wedge|wedges|"
-        r"chunk|chunks|"
-        r"piece|pieces"
-    )
-
-    # Remove quantity + measurement/container layers repeatedly from
-    # the beginning of the source text.
-    #
-    # This handles recipe wording such as:
-    #
-    #   14 1/2 ounces can petite diced tomatoes
-    #       -> petite diced tomatoes
-    #
-    # and:
-    #
-    #   1 1/2 cups plus 1 tablespoon flour
-    #       -> plus 1 tablespoon flour
-    #
-    # The loop is structural: it removes however many leading
-    # quantity/measurement/container layers the source provides.
-    previous = None
-
-    while text and text != previous:
-        previous = text
-
-        text = re.sub(
-            rf"^\s*(?:{quantity})\s*(?:{measure_words})\s+(?:of\s+)?",
-            "",
-            text,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-        text = re.sub(
-            rf"^\s*(?:{quantity})\s*",
-            "",
-            text,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-        text = re.sub(
-            rf"^\s*(?:{measure_words})\s+(?:of\s+)?",
-            "",
-            text,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-    # Remove generic preparation adjectives/adverbs that precede the noun.
-    # These are grammatical descriptors, not ingredient-specific rules.
-    leading_descriptors = (
-        r"freshly|fresh|dried|dry|frozen|thawed|"
-        r"cooked|raw|ripe|peeled|unpeeled|seeded|deseeded|"
-        r"cored|halved|quartered|chopped|diced|minced|sliced|"
-        r"cubed|grated|shredded|crushed|mashed|drained|rinsed|"
-        r"washed|softened|melted|beaten|whisked|divided|"
-        r"finely|roughly|thinly|coarsely|"
-        r"boneless|skinless|"
-        r"large|medium|small|petite|extra-large|extra-small"
-    )
-
-    previous = None
-    while text and text != previous:
-        previous = text
-        text = re.sub(
-            rf"^\s*(?:{leading_descriptors})\s+",
-            "",
-            text,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-    # Remove generic preparation/instruction tails. These begin after the
-    # noun phrase and therefore must not become part of the ingredient.
-    prep_tail = (
-        r"finely|roughly|thinly|coarsely|"
-        r"chopped|diced|minced|sliced|cubed|grated|shredded|"
-        r"crushed|mashed|peeled|seeded|deseeded|cored|"
-        r"halved|quartered|trimmed|drained|rinsed|washed|"
-        r"melted|softened|beaten|whisked|cooked|"
-        r"roasted|baked|boiled|fried|grilled|seared|steamed|"
-        r"to\s+taste|as\s+needed|for\s+serving|for\s+garnish|"
-        r"for\s+frying|for\s+cooking|"
-        r"cut\s+into|cut\s+in|"
-        r"left\s+whole|"
-        r"divided"
-    )
-
-    text = re.sub(
-        rf"\s+\b(?:{prep_tail})\b.*$",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove leading "of" left behind by phrases such as "1 cup of flour".
-    text = re.sub(
-        r"^\s*of\s+",
-        "",
-        text,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-    # Remove a final quantity that appears after the ingredient phrase.
-    text = re.sub(
-        rf"\s+(?:{quantity})\s*$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # Hyphens are retained as meaningful noun-phrase punctuation.
-    text = re.sub(r"\s+", " ", text).strip(" .:-")
-
-    if not text:
-        return ""
-
-    # The extractor must never manufacture an ingredient from a lone
-    # preparation word.
-    if re.fullmatch(
-        rf"(?:{leading_descriptors}|{prep_tail})",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        return ""
-
-    # Final universal source-identity cleanup.
-    #
-    # The noun extractor has already removed quantities, measurements,
-    # descriptors, and preparation tails. The source-identity cleaner
-    # performs the final punctuation/count cleanup so malformed source
-    # fragments can never reach matching or the user-facing display.
-    cleaned_identity = _preserve_recipe_source_identity(text)
-
-    if not cleaned_identity:
-        return ""
-
-    return cleaned_identity.lower()
-
-
-
-# ---------------------------------------------------------
-# UNIVERSAL CANONICAL INGREDIENT IDENTITY
-# ---------------------------------------------------------
-# InThePantry only needs the ingredient identity itself.
-#
-# Remove:
-#   - quantities
-#   - preparation instructions
-#   - source/editorial wording
-#   - non-identity quality/raising descriptors
-#   - non-identity size wording
-#   - dietary/source qualifiers
-#
-# Keep:
-#   - meaningful ingredient/flavor distinctions
-#   - actual ingredient varieties where they matter
-#
-# Pantry staples:
-#   - all salt forms -> removed
-#   - seasoning pepper -> removed
-#   - water -> removed
-#
-# Examples:
-#   grass fed ground beef -> ground beef
-#   lean ground beef -> ground beef
-#   garlic roughly -> garlic
-#   corn cut off the cob -> corn
-#   purple potatoes -> potato
-#   extra virgin olive oil -> olive oil
-#   red bell pepper -> red bell pepper
-#   jasmine rice -> jasmine rice
-# ---------------------------------------------------------
 
 def canonical_ingredient_identity(text):
     if not isinstance(text, str):
@@ -5610,12 +5352,41 @@ def match_recipe_to_pantry(recipe, pantry_items):
             list(pantry)
         )
 
-    requirements = {}
+    # -----------------------------------------------------
+    # UNIVERSAL SOURCE-INGREDIENT NOUN BOUNDARY
+    # -----------------------------------------------------
+    # The actual recipe ingredient list is the only authority.
+    # Every recipe ingredient must pass through the universal
+    # noun-phrase extractor BEFORE matching.
+    #
+    # This prevents raw recipe source strings such as:
+    #   1 lb beef tenderloin
+    #   to 6 lb first-cut beef brisket
+    #   each black pepper
+    #   t fresh lemon juice
+    #
+    # from ever becoming recipe requirements.
+    # -----------------------------------------------------
 
-    for original in recipe.get(
+    source_ingredients = []
+
+    for raw_ingredient in recipe.get(
         "ingredients",
         []
     ):
+        if not isinstance(raw_ingredient, str):
+            continue
+
+        noun_identity = extract_recipe_ingredient_noun_phrase(
+            raw_ingredient
+        )
+
+        if noun_identity:
+            source_ingredients.append(noun_identity)
+
+    requirements = {}
+
+    for original in source_ingredients:
         # -----------------------------------------------------
         # UNIVERSAL RECIPE-INGREDIENT REQUIREMENT PARSING
         # -----------------------------------------------------
@@ -6971,22 +6742,12 @@ def clean_recipe_ingredient_metadata(text):
 
 def _preserve_recipe_source_identity(text):
     """
-    Extract the ingredient identity directly from one actual recipe
-    ingredient line.
+    Extract only the ingredient identity/noun phrase from one actual
+    recipe ingredient-list line.
 
-    The recipe source is authoritative.  This layer is deliberately
-    independent of CORE_INGREDIENTS, aliases, pantry contents, or
-    ingredient-specific exceptions.
-
-    Pipeline:
-        raw recipe ingredient
-            -> remove quantities / containers
-            -> remove preparation/editorial wording
-            -> keep the remaining noun phrase
-            -> return that source identity
-
-    The goal is not to guess ingredients.  It is to preserve the noun
-    phrase that the recipe actually supplied.
+    The recipe source is authoritative. This function removes source
+    formatting, quantities, units, preparation descriptors, and other
+    non-identity wording without using ingredient-specific patches.
     """
     if not isinstance(text, str):
         return ""
@@ -6998,168 +6759,265 @@ def _preserve_recipe_source_identity(text):
     if not text:
         return ""
 
-    # Parentheses in recipe ingredient lines are normally package size,
-    # quantity, or preparation notes.
+    # Remove parenthetical quantity/preparation notes.
     text = re.sub(r"\([^()]*\)", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
 
-    # A comma in a recipe ingredient line normally introduces a
-    # preparation/editorial qualifier:
-    #
-    #   red wine, I use Merlot or Cabernet Sauvignon -> red wine
-    #   garlic, minced -> garlic
-    #   tomatoes, drained -> tomatoes
-    #
-    # The first segment is therefore the source ingredient phrase.
-    # This is structural and does not depend on an ingredient dictionary.
+    # Recipe sources sometimes put an alternative marker before the
+    # actual ingredient:
+    #   or, celery stalks with leaves
+    #   and, parsley
+    text = re.sub(
+        r"^\s*(?:or|and)\s*,\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove source grammar before quantities:
+    #   to 6 lb beef brisket
+    #   to 8 carrots
+    #   to 2 kg beef
+    text = re.sub(
+        r"^\s*to\s+(?=(?:\d|[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]))",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove a leading dash/en-dash left by recipe formatting:
+    #   – 2 kg beef brisket
+    text = re.sub(
+        r"^\s*[-–—]\s*",
+        "",
+        text,
+        count=1,
+    )
+
+    # Remove editorial lead-ins that do not identify the ingredient.
+    text = re.sub(
+        r"^\s*(?:each|per)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # A comma or semicolon normally starts preparation/editorial text.
     if "," in text:
         text = text.split(",", 1)[0].strip()
 
     if ";" in text:
         text = text.split(";", 1)[0].strip()
 
-    # Remove leading quantities, including fractions and ranges.
+    # -------------------------------------------------------------
+    # QUANTITY / UNIT REMOVAL
+    # -------------------------------------------------------------
+    # Handles:
+    #   1 lb beef tenderloin
+    #   6 lb beef brisket
+    #   2 kg / 3 - 4 lb beef brisket
+    #   1/2 cup flour
+    #   3-4 carrots
+    #   t fresh lemon juice
+    # -------------------------------------------------------------
+
     quantity = (
-        r"(?:\d+\s+\d+/\d+|\d+\s*/\s*\d+|/\s*\d+|\d+/\d+|\d+(?:\.\d+)?|"
-        r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])"
+        r"(?:"
+        r"\d+\s+\d+/\d+"
+        r"|"
+        r"\d+\s*/\s*\d+"
+        r"|"
+        r"\d+/\d+"
+        r"|"
+        r"\d+(?:\.\d+)?"
+        r"|"
+        r"[¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]"
+        r")"
     )
-    had_measurement_or_container = bool(
-        re.match(
-            r"^\s*" + quantity +
-            r"\s*(?:[-–—]\s*)?(?:cups?|tablespoons?|tbsp|tbs|"
-            r"teaspoons?|tsp|pounds?|lbs?|ounces?|oz|grams?|g|"
-            r"kilograms?|kg|milliliters?|ml|liters?|litres?|l|"
-            r"cans?|packages?|packets?|bottles?|jars?|heads?|"
-            r"bunches?|pinches?|handfuls?|dashes?|cloves?|sprigs?|"
-            r"stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)\b",
+
+    unit = (
+        r"(?:"
+        r"cups?|"
+        r"tablespoons?|tbsp|tbs|tb|t|"
+        r"teaspoons?|tsp|"
+        r"pounds?|lbs?|"
+        r"ounces?|oz|"
+        r"grams?|g|"
+        r"kilograms?|kg|"
+        r"milliliters?|millilitres?|ml|"
+        r"liters?|litres?|l|"
+        r"cans?|"
+        r"packages?|packets?|pkg|"
+        r"bottles?|jars?|"
+        r"containers?|"
+        r"heads?|bunches?|"
+        r"pinches?|handfuls?|dashes?|"
+        r"caps?|"
+        r"cloves?|sprigs?|stalks?|"
+        r"slices?|strips?|wedges?|chunks?|pieces?|fillets?"
+        r")"
+    )
+
+    # Repeatedly remove quantity + unit pairs from the beginning.
+    # This is intentionally structural rather than ingredient-specific.
+    previous = None
+
+    while previous != text:
+        previous = text
+
+        # Numeric range:
+        #   3-4 lb
+        #   3 – 4 lb
+        text = re.sub(
+            rf"^\s*{quantity}\s*[-–—]\s*{quantity}\s*{unit}\b\s*",
+            "",
             text,
+            count=1,
             flags=re.IGNORECASE,
         )
-    )
 
-    text = re.sub(
-        rf"^\s*{quantity}\s*(?:[-–—]\s*)?",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
+        # Normal quantity + unit:
+        #   6 lb
+        #   2 kg
+        #   1 cup
+        text = re.sub(
+            rf"^\s*{quantity}\s*[-–—]?\s*{unit}\b\s*(?:of\s+)?",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
-    # Remove recipe measuring/container words.  These are not part of
-    # the ingredient noun phrase.
-    text = re.sub(
-        r"^\s*(?:"
-        r"cups?|tablespoons?|tbsp|tbs|teaspoons?|tsp|"
-        r"pounds?|lbs?|ounces?|oz|grams?|g|kilograms?|kg|"
-        r"milliliters?|ml|liters?|litres?|l|"
-        r"cans?|packages?|packets?|bottles?|jars?|"
-        r"heads?|bunches?|pinches?|handfuls?|dashes?|"
-        r"caps?|cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?"
-        r")\b\.?\s*(?:of\s+)?",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
+        # Quantity by itself when a source omits the unit:
+        #   2 carrots
+        text = re.sub(
+            rf"^\s*{quantity}\s+(?=[A-Za-z])",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
-    # Some sources put the unit before the quantity/container wording.
-    text = re.sub(
-        r"^\s*(?:"
-        r"one|two|three|four|five|six|seven|eight|nine|ten"
-        r")\s+(?:"
-        r"cups?|tablespoons?|tbsp|teaspoons?|tsp|"
-        r"pounds?|lbs?|ounces?|oz|grams?|g|kg|ml|liters?|"
-        r"cans?|packages?|jars?|bunches?|cloves?|sprigs?|stalks?"
-        r")\b\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
+        # Handle a second range after a slash:
+        #   2 kg / 3 - 4 lb
+        text = re.sub(
+            rf"^\s*/\s*{quantity}\s*[-–—]\s*{quantity}\s*{unit}\b\s*",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
-    # Remove leading preparation/state descriptors.  These describe the
-    # ingredient rather than replacing its noun phrase.
+        # Handle a second quantity/unit after a slash:
+        #   2 kg / 3 lb
+        text = re.sub(
+            rf"^\s*/\s*{quantity}\s*{unit}\b\s*",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        # Standalone abbreviated unit at the front:
+        #   t fresh lemon juice
+        #   tbsp bbq sauce
+        text = re.sub(
+            rf"^\s*{unit}\b\s*(?:of\s+)?",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    # -------------------------------------------------------------
+    # LEADING DESCRIPTORS
+    # -------------------------------------------------------------
+    # These describe the ingredient but are not the ingredient identity.
     leading_descriptors = (
+        r"freshly[- ]ground|coarsely[- ]ground|"
         r"freshly|fresh|dried|dry|frozen|thawed|cooked|raw|ripe|"
         r"warm|hot|cold|chilled|lukewarm|room[- ]temperature|"
         r"peeled|unpeeled|seeded|deseeded|cored|halved|quartered|"
         r"chopped|diced|minced|sliced|cubed|grated|shredded|crushed|"
         r"mashed|drained|rinsed|washed|softened|melted|beaten|whisked|"
-        r"divided|packed|firmly\s+packed|"
-        r"finely|roughly|thinly|coarsely|"
+        r"divided|packed|firmly[- ]packed|"
+        r"finely|roughly|thinly|coarsely|thick|"
         r"boneless|skinless|bone[- ]in|skin[- ]on|skin[- ]off|"
         r"large|medium|small|extra[- ]large|extra[- ]small"
     )
+
     previous = None
+
     while previous != text:
         previous = text
+
+        # Supports both:
+        #   freshly ground pepper
+        #   freshly-ground pepper
         text = re.sub(
-            rf"^\s*(?:{leading_descriptors})\s+",
+            rf"^\s*(?:{leading_descriptors})(?:\s+|-)",
             "",
             text,
+            count=1,
             flags=re.IGNORECASE,
         )
 
-    # Remove common editorial/preparation tails that can occur without
-    # a comma.  Only generic action/context words are used here.
+    # Remove preparation/count wording that surrounds the ingredient
+    # identity without stripping legitimate ingredient forms such as
+    # "cinnamon stick" or "cardamom pods".
     text = re.sub(
-        r"\s+(?:for|to)\s+(?:"
-        r"frying|browning|cooking|serving|garnish|garnishing|"
-        r"drizzling|drizzle|greasing|brushing|sauteing|sautéing|"
-        r"topping|seasoning"
-        r")(?:\s+.*)?$",
+        r"^\s*(?:thick|thin)\s+slices?\s+",
         "",
         text,
         flags=re.IGNORECASE,
     )
 
-    # Remove trailing form/count words when they describe how the
-    # ingredient is portioned rather than identifying a different food.
+    # The leading-descriptor cleanup may already have removed
+    # "thick"/"thin", leaving the structural word "slice(s)".
     text = re.sub(
-        r"\s+(?:cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)$",
+        r"^\s*slices?\s+(?=\S)",
         "",
         text,
         flags=re.IGNORECASE,
     )
 
-    if had_measurement_or_container:
-        text = re.sub(
-            r"\s+sticks?$",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
+    text = re.sub(
+        r"\s+(?:stalks?)\s+with\s+leaves$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
 
-    text = re.sub(r"^\s*(?:of|a|an|the)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\s+(?:cloves?|sprigs?|stalks?|slices?|strips?|"
+        r"wedges?|chunks?|pieces?|fillets?)$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
 
-    # Reject source-reference/editorial phrases that point to another
-    # ingredient or recipe component rather than naming an ingredient.
-    #
-    # Examples:
-    #   liquid from the roast/vegetables noted above
-    #   all of the spice mix
-    #   spice blend mixture below
-    #   rest of the spice blend mixture
-    #
-    # These are structural references, not ingredient identities.
+    text = re.sub(
+        r"^\s*(?:of|a|an|the)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Reject explicit source references rather than treating them as
+    # ingredient identities.
     if re.match(
         r"^\s*(?:"
         r"all\s+of\s+the\s+"
-        r"|"
-        r"rest\s+of\s+the\s+"
-        r"|"
-        r"(?:liquid|juices?|mixture|mix|blend|spice\s+blend)"
-        r"\s+from\s+"
-        r"|"
-        r".*\b(?:noted|mentioned|listed|shown|described)\s+above\b"
-        r"|"
-        r".*\b(?:below|above)\b.*\b(?:mix|mixture|blend)\b"
+        r"|rest\s+of\s+the\s+"
+        r"|(?:liquid|juices?|mixture|mix|blend|spice\s+blend)\s+from\s+"
+        r"|.*\b(?:noted|mentioned|listed|shown|described)\s+above\b"
+        r"|.*\b(?:below|above)\b.*\b(?:mix|mixture|blend)\b"
         r")",
         text,
         flags=re.IGNORECASE,
     ):
         return ""
 
-    # Reject explicit recipe-component references such as
-    # "spice blend mixture below" without rejecting legitimate ingredients
-    # such as "all-spice powder" or "cinnamon stick".
     if re.search(
         r"\b(?:spice\s+blend|spice\s+mix|mixture|mix)\b.*\b(?:below|above)\b",
         text,
@@ -7167,22 +7025,16 @@ def _preserve_recipe_source_identity(text):
     ):
         return ""
 
-    # Remove unmatched scraper punctuation before trailing form/count cleanup.
+    # Final scraper punctuation cleanup.
     text = re.sub(r"^[\(\[\{]+", "", text)
     text = re.sub(r"[\)\]\}]+$", "", text)
-    text = re.sub(r"\s+", " ", text).strip(" ,.-")
-    text = re.sub(
-        r"\s+(?:cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?)$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
+    text = re.sub(r"\s+", " ", text)
     text = text.strip(" ,.-")
 
     if not text:
         return ""
 
-    # Standalone preparation words are never ingredient identities.
+    # A descriptor by itself is not an ingredient.
     if re.fullmatch(
         r"(?:fine|coarse|large|medium|small|fresh|freshly|"
         r"dry|dried|warm|hot|cold|chilled|softened|melted|"
@@ -7194,6 +7046,7 @@ def _preserve_recipe_source_identity(text):
         return ""
 
     return text.lower()
+
 
 def normalize_recipe_ingredient(text, preserve_source=False):
     if not text:
@@ -10665,8 +10518,18 @@ def find_recipes(
                 item.get("ingredient", "")
             ).strip()
 
-            if identity:
-                matched.append(identity)
+            if not identity:
+                continue
+
+            # Final universal noun-identity boundary.
+            # Nothing reaches the user-facing Have list unless it
+            # resolves to an ingredient noun/noun phrase.
+            cleaned_identity = extract_recipe_ingredient_noun_phrase(
+                identity
+            )
+
+            if cleaned_identity:
+                matched.append(cleaned_identity)
 
         missing_items = pantry_result.get(
             "missing",
@@ -10680,8 +10543,18 @@ def find_recipes(
                 item.get("ingredient", "")
             ).strip()
 
-            if identity:
-                missing.append(identity)
+            if not identity:
+                continue
+
+            # Final universal noun-identity boundary.
+            # This prevents raw quantities, units, preparation text,
+            # and source/editorial wording from ever reaching Need.
+            cleaned_identity = extract_recipe_ingredient_noun_phrase(
+                identity
+            )
+
+            if cleaned_identity:
+                missing.append(cleaned_identity)
 
         # ---------------------------------------------------------
         # UNIVERSAL FINAL DISPLAY DEDUPLICATION
