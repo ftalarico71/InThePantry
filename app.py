@@ -7053,7 +7053,7 @@ def _preserve_recipe_source_identity(text):
         r"milliliters?|ml|liters?|litres?|l|"
         r"cans?|packages?|packets?|bottles?|jars?|"
         r"heads?|bunches?|pinches?|handfuls?|dashes?|"
-        r"cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?"
+        r"caps?|cloves?|sprigs?|stalks?|slices?|strips?|wedges?|chunks?|pieces?|fillets?"
         r")\b\.?\s*(?:of\s+)?",
         "",
         text,
@@ -7128,6 +7128,44 @@ def _preserve_recipe_source_identity(text):
         )
 
     text = re.sub(r"^\s*(?:of|a|an|the)\s+", "", text, flags=re.IGNORECASE)
+
+    # Reject source-reference/editorial phrases that point to another
+    # ingredient or recipe component rather than naming an ingredient.
+    #
+    # Examples:
+    #   liquid from the roast/vegetables noted above
+    #   all of the spice mix
+    #   spice blend mixture below
+    #   rest of the spice blend mixture
+    #
+    # These are structural references, not ingredient identities.
+    if re.match(
+        r"^\s*(?:"
+        r"all\s+of\s+the\s+"
+        r"|"
+        r"rest\s+of\s+the\s+"
+        r"|"
+        r"(?:liquid|juices?|mixture|mix|blend|spice\s+blend)"
+        r"\s+from\s+"
+        r"|"
+        r".*\b(?:noted|mentioned|listed|shown|described)\s+above\b"
+        r"|"
+        r".*\b(?:below|above)\b.*\b(?:mix|mixture|blend)\b"
+        r")",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return ""
+
+    # Reject explicit recipe-component references such as
+    # "spice blend mixture below" without rejecting legitimate ingredients
+    # such as "all-spice powder" or "cinnamon stick".
+    if re.search(
+        r"\b(?:spice\s+blend|spice\s+mix|mixture|mix)\b.*\b(?:below|above)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return ""
 
     # Remove unmatched scraper punctuation before trailing form/count cleanup.
     text = re.sub(r"^[\(\[\{]+", "", text)
