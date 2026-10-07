@@ -10600,9 +10600,9 @@ def find_recipes(
             "have",
             []
         ):
-            identity = user_facing_ingredient_identity(
+            identity = str(
                 item.get("ingredient", "")
-            )
+            ).strip()
 
             if identity:
                 matched.append(identity)
@@ -10615,9 +10615,9 @@ def find_recipes(
         missing = []
 
         for item in missing_items:
-            identity = user_facing_ingredient_identity(
+            identity = str(
                 item.get("ingredient", "")
-            )
+            ).strip()
 
             if identity:
                 missing.append(identity)
