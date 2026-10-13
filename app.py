@@ -11016,13 +11016,19 @@ def find_recipes(
             ),
             "instructions": instructions,
 
-            "source": url
+            "source": url,
+            "clean_protein": 0 if any(
+                m in recipe.get("name", "").lower() or any(m in ing.lower() for ing in recipe_ingredients)
+                for m in ["beef", "chicken", "pork", "steak", "sausage", "bacon", "turkey", "lamb"]
+                if m not in [p.lower() for p in user_ingredients]
+            ) else 1
         })
 
     # When both a cuisine and diet/style are selected, prefer recipes
     # that satisfy both. Otherwise preserve the existing preference order.
     scored_recipes.sort(
         key=lambda x: (
+            x["clean_protein"],
             (
                 1
                 if x["diet_match"] and x["cuisine_match"]
