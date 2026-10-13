@@ -5987,7 +5987,7 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
 
 
-def search_web_recipes(user_ingredients, count=10):
+def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
     if not user_ingredients:
         return []
 
@@ -6229,8 +6229,14 @@ def search_web_recipes(user_ingredients, count=10):
     )
 
     try:
+        # URLs already delivered for this exact search are excluded before
+        # their pages are fetched, so the next batch contains fresh recipes.
+        seen_urls = {
+            str(value or "").strip().split("#", 1)[0].rstrip("/").lower()
+            for value in (exclude_urls or [])
+            if str(value or "").strip()
+        }
         results = []
-        seen_urls = set()
         query_result_groups = []
 
         for query_index, query in enumerate(queries):
@@ -6240,7 +6246,7 @@ def search_web_recipes(user_ingredients, count=10):
                 BRAVE_SEARCH_URL,
                 params={
                     "q": query,
-                    "count": max(count, 20)
+                    "count": min(max(int(count), 1), 20)
                 },
                 headers={
                     "X-Subscription-Token": BRAVE_API_KEY,
@@ -6263,11 +6269,12 @@ def search_web_recipes(user_ingredients, count=10):
                 url = result.get("url", "").strip()
                 description = result.get("description", "").strip()
 
-                if not title or not url or url in seen_urls:
+                url_key = str(url or "").strip().split("#", 1)[0].rstrip("/").lower()
+                if not title or not url or not url_key or url_key in seen_urls:
                     continue
 
                 candidates.append((title, url, description))
-                seen_urls.add(url)
+                seen_urls.add(url_key)
 
             # Fetch recipe pages concurrently instead of waiting for each
             # website to finish before starting the next one.
@@ -10371,6 +10378,7 @@ def find_recipes(
     search_terms=None,
     selected_cuisine=None,
     selected_diet=None,
+    exclude_urls=None,
 ):
     """
     Search the web for recipes, extract real recipe data,
@@ -10388,7 +10396,8 @@ def find_recipes(
         # ingredients the user entered.
         search_results = search_web_recipes(
             user_ingredients,
-            count=10
+            count=30,
+            exclude_urls=exclude_urls,
         )
     except Exception as e:
         print("Web recipe search error:", e)
@@ -11068,7 +11077,123 @@ def find_recipes(
         reverse=True
     )
 
-    return scored_recipes[:30]
+    # Return a distinct batch of ten. When multiple protein groups were selected,
+    # deal recipes out round-robin so one group (often chicken) cannot dominate.
+    bucket_order = ["Beef", "Chicken", "Pork", "Seafood", "Lamb", "Turkey"]
+    protein_patterns = {
+        "Beef": re.compile(r"\b(?:beef|steak|chuck\s+roast)\b", re.IGNORECASE),
+        "Chicken": re.compile(r"\bchicken\b", re.IGNORECASE),
+        "Pork": re.compile(r"\b(?:pork|bacon|ham|sausage|prosciutto|pancetta)\b", re.IGNORECASE),
+        "Seafood": re.compile(
+            r"\b(?:fish|salmon|cod|haddock|tilapia|tuna|shrimp|prawn|seafood|"
+            r"crab|lobster|scallop|clam|mussel|oyster|trout|anchovy|sardine)\b",
+            re.IGNORECASE,
+        ),
+        "Lamb": re.compile(r"\blamb\b", re.IGNORECASE),
+        "Turkey": re.compile(r"\bturkey\b", re.IGNORECASE),
+    }
+
+    selected_bucket_set = set()
+    for pantry_item in user_ingredients or []:
+        item_text = str(clean_word(pantry_item) or pantry_item or "")
+        for bucket in bucket_order:
+            if protein_patterns[bucket].search(item_text):
+                selected_bucket_set.add(bucket)
+                break
+
+    selected_buckets = [
+        bucket for bucket in bucket_order if bucket in selected_bucket_set
+    ]
+
+    # Remove duplicate recipe titles and duplicate source URLs within the same batch.
+    unique_recipes = []
+    seen_batch_urls = set()
+    seen_batch_titles = set()
+    for candidate in scored_recipes:
+        source_key = (
+            str(candidate.get("source") or "")
+            .strip()
+            .split("#", 1)[0]
+            .rstrip("/")
+            .lower()
+        )
+        title_key = re.sub(
+            r"[^a-z0-9]+",
+            " ",
+            str(candidate.get("name") or "").lower(),
+        ).strip()
+
+        if source_key and source_key in seen_batch_urls:
+            continue
+        if title_key and title_key in seen_batch_titles:
+            continue
+
+        if source_key:
+            seen_batch_urls.add(source_key)
+        if title_key:
+            seen_batch_titles.add(title_key)
+        unique_recipes.append(candidate)
+
+    scored_recipes = unique_recipes
+
+    def recipe_protein_bucket(candidate):
+        title = str(candidate.get("name") or "")
+        for bucket in bucket_order:
+            if protein_patterns[bucket].search(title):
+                return bucket
+
+        ingredient_scores = {bucket: 0 for bucket in bucket_order}
+        for ingredient in candidate.get("ingredients", []) or []:
+            ingredient_text = str(ingredient or "")
+            for bucket in bucket_order:
+                if protein_patterns[bucket].search(ingredient_text):
+                    ingredient_scores[bucket] += 1
+                    break
+
+        best_score = max(ingredient_scores.values()) if ingredient_scores else 0
+        if best_score <= 0:
+            return None
+
+        return next(
+            bucket for bucket in bucket_order
+            if ingredient_scores[bucket] == best_score
+        )
+
+    if len(selected_buckets) > 1:
+        grouped = {bucket: [] for bucket in selected_buckets}
+        unclassified = []
+        other_proteins = []
+
+        for candidate in scored_recipes:
+            bucket = recipe_protein_bucket(candidate)
+            if bucket in grouped:
+                grouped[bucket].append(candidate)
+            elif bucket is None:
+                unclassified.append(candidate)
+            else:
+                other_proteins.append(candidate)
+
+        balanced = []
+        while len(balanced) < 10:
+            added_this_round = False
+            for bucket in selected_buckets:
+                if grouped[bucket]:
+                    balanced.append(grouped[bucket].pop(0))
+                    added_this_round = True
+                    if len(balanced) >= 10:
+                        break
+            if not added_this_round:
+                break
+
+        # Use neutral recipes first if a selected category had too few candidates.
+        for candidate in unclassified + other_proteins:
+            if len(balanced) >= 10:
+                break
+            balanced.append(candidate)
+
+        return balanced[:10]
+
+    return scored_recipes[:10]
 
 
 # ---------------------------------------------------------
@@ -11731,12 +11856,151 @@ function toggleIngredientCategory(button) {
         button.classList.add("open");
     }
 }
+const RECIPE_HISTORY_STORAGE_KEY = "inThePantryRecipeHistory";
+let recipeHistoryBySearch = {};
+let recipeSearchKey = "";
+let recipeDisplayOrder = null;
 let currentRecipePage = 0;
+
+function currentRecipeSearchKey() {
+    const ingredientInput = document.querySelector(
+        'input[name="ingredients"]'
+    );
+
+    const ingredients = ingredientInput
+        ? ingredientInput.value.trim().toLowerCase()
+        : "";
+
+    const common = Array.from(
+        document.querySelectorAll(
+            'input[name="common_ingredients"]:checked'
+        )
+    ).map(function(item) {
+        return item.value.trim().toLowerCase();
+    }).sort();
+
+    function selectedValue(name) {
+        const fields = Array.from(
+            document.querySelectorAll('[name="' + name + '"]')
+        );
+
+        const field =
+            fields.find(function(item) { return item.checked; }) ||
+            fields.find(function(item) {
+                return item.tagName === "SELECT";
+            }) ||
+            fields[0];
+
+        return field ? String(field.value || "").trim().toLowerCase() : "";
+    }
+
+    return JSON.stringify({
+        ingredients: ingredients,
+        common: common,
+        diet: selectedValue("diet_style"),
+        cuisine: selectedValue("cuisine_type")
+    });
+}
+
+function prepareRecipeRotation() {
+    recipeSearchKey = currentRecipeSearchKey();
+
+    try {
+        recipeHistoryBySearch = JSON.parse(
+            localStorage.getItem(RECIPE_HISTORY_STORAGE_KEY) || "{}"
+        );
+
+        if (
+            !recipeHistoryBySearch ||
+            typeof recipeHistoryBySearch !== "object" ||
+            Array.isArray(recipeHistoryBySearch)
+        ) {
+            recipeHistoryBySearch = {};
+        }
+    } catch (error) {
+        recipeHistoryBySearch = {};
+    }
+
+    const history = Array.isArray(
+        recipeHistoryBySearch[recipeSearchKey]
+    ) ? recipeHistoryBySearch[recipeSearchKey] : [];
+
+    recipeDisplayOrder = Array.from(
+        document.querySelectorAll(".recipe")
+    );
+
+    recipeDisplayOrder.sort(function(a, b) {
+        const aIndex = history.indexOf(a.dataset.source || "");
+        const bIndex = history.indexOf(b.dataset.source || "");
+
+        // Unseen recipes come first. Previously seen recipes remain
+        // available afterward, with the least recently seen first.
+        const aRank = aIndex === -1 ? -1 : aIndex;
+        const bRank = bIndex === -1 ? -1 : bIndex;
+
+        return aRank - bRank;
+    });
+
+    recipeDisplayOrder.forEach(function(recipe, index) {
+        const badge = recipe.querySelector(".best-match");
+        if (badge) {
+            badge.style.display = index === 0 ? "" : "none";
+        }
+    });
+}
+
+function rememberVisibleRecipes(recipes, start, end) {
+    // The app returns ten recipes, although only five cards are visible per page.
+    // Remember all ten so the next identical search can exclude the whole batch.
+    const shownUrls = recipes
+        .slice(0, 10)
+        .map(function(recipe) {
+            return recipe.dataset.source || "";
+        })
+        .filter(Boolean);
+
+    if (!shownUrls.length) {
+        return;
+    }
+
+    let history = Array.isArray(
+        recipeHistoryBySearch[recipeSearchKey]
+    ) ? recipeHistoryBySearch[recipeSearchKey].slice() : [];
+
+    shownUrls.forEach(function(url) {
+        history = history.filter(function(item) {
+            return item !== url;
+        });
+        history.push(url);
+    });
+
+    // Bound storage so many different searches cannot grow it indefinitely.
+    delete recipeHistoryBySearch[recipeSearchKey];
+    recipeHistoryBySearch[recipeSearchKey] = history.slice(-100);
+
+    const searchKeys = Object.keys(recipeHistoryBySearch);
+    while (searchKeys.length > 12) {
+        const oldestKey = searchKeys.shift();
+        if (oldestKey !== recipeSearchKey) {
+            delete recipeHistoryBySearch[oldestKey];
+        }
+    }
+
+    try {
+        localStorage.setItem(
+            RECIPE_HISTORY_STORAGE_KEY,
+            JSON.stringify(recipeHistoryBySearch)
+        );
+    } catch (error) {
+        // Recipe browsing should still work if browser storage is unavailable.
+    }
+}
 
 function showRecipePage(page) {
     currentRecipePage = page;
 
-    const recipes = document.querySelectorAll(".recipe");
+    const recipes = recipeDisplayOrder ||
+        Array.from(document.querySelectorAll(".recipe"));
     const perPage = 5;
 
     const start = page * perPage;
@@ -11749,6 +12013,8 @@ function showRecipePage(page) {
             recipe.style.display = "none";
         }
     });
+
+    rememberVisibleRecipes(recipes, start, end);
 
     const previous = document.getElementById("previous-recipes");
 const next = document.getElementById("next-recipes");
@@ -11781,6 +12047,7 @@ if (nextTop) {
 }
 document.addEventListener("DOMContentLoaded", function () {
     if (document.querySelectorAll(".recipe").length > 0) {
+        prepareRecipeRotation();
         showRecipePage(0);
     }
 });
@@ -11944,11 +12211,30 @@ function initializeRecipeSearch() {
         }
 
         try {
+            const requestData = new FormData(form);
+
+            // Tell the server which recipes were already delivered for this search.
+            try {
+                const storedHistory = JSON.parse(
+                    localStorage.getItem(RECIPE_HISTORY_STORAGE_KEY) || "{}"
+                );
+                const historyKey = currentRecipeSearchKey();
+                const previouslyShown = Array.isArray(storedHistory[historyKey])
+                    ? storedHistory[historyKey]
+                    : [];
+
+                previouslyShown.forEach(function(url) {
+                    requestData.append("seen_recipe_urls", url);
+                });
+            } catch (historyError) {
+                // Recipe search remains usable if browser storage is unavailable.
+            }
+
             const response = await fetch(
                 form.action || window.location.href,
                 {
                     method: "POST",
-                    body: new FormData(form),
+                    body: requestData,
                     headers: {
                         "X-Requested-With": "XMLHttpRequest"
                     }
@@ -12004,6 +12290,16 @@ function initializeRecipeSearch() {
             replacementForm.after(resultsFragment);
 
             initializeRecipeSearch();
+
+            // Rebuild rotation using the newly loaded recipe cards.
+            // This prevents the previous search's DOM elements from
+            // being reused for the next search.
+            if (
+                typeof prepareRecipeRotation === "function" &&
+                document.querySelectorAll(".recipe").length > 0
+            ) {
+                prepareRecipeRotation();
+            }
 
             if (typeof showRecipePage === "function" &&
                 document.querySelectorAll(".recipe").length > 0) {
@@ -12376,7 +12672,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
             {% for recipe in recipes %}
 
-                <div class="recipe">
+                <div class="recipe" data-source="{{ recipe.source }}">
 <h2>
     {{ recipe.name }}
 </h2>
@@ -12406,13 +12702,9 @@ document.addEventListener("DOMContentLoaded", function () {
 {% endif %}
 
 
-{% if loop.first %}
-
-    <p class="best-match">
-        🥇 BEST MATCH
-    </p>
-
-{% endif %}
+<p class="best-match" {% if not loop.first %}style="display: none;"{% endif %}>
+    🥇 BEST MATCH
+</p>
 
 <p class="match match-low">
     🟠 {{ recipe.match_percentage }}% Match
@@ -12769,7 +13061,8 @@ def home():
                 user_ingredients,
                 search_terms=search_payload,
                 selected_cuisine=selected_cuisine,
-                selected_diet=selected_diet
+                selected_diet=selected_diet,
+                exclude_urls=request.form.getlist("seen_recipe_urls"),
             )
 
 
