@@ -6018,22 +6018,14 @@ def search_web_recipes(user_ingredients, count=10):
     # individual pantry item.
     # -------------------------------------------------------------
 
-    selected_protein_terms = []
+    # Give every meaningful ingredient a discovery opportunity.
+    # Treat ingredient types equally; do not cap discovery at three.
+    meaningful_ingredients = [
+        item for item in ingredients
+        if item not in {"salt", "pepper", "water"}
+    ]
 
-    for item in ingredients:
-        for meat_options in MEAT_GROUPS.values():
-            if item in meat_options:
-                selected_protein_terms.append(item)
-                break
-
-    if selected_protein_terms:
-        discovery_anchors = selected_protein_terms[:2]
-    else:
-        discovery_anchors = [
-            item
-            for item in ingredients
-            if item not in {"salt", "pepper", "water"}
-        ][:2]
+    discovery_anchors = meaningful_ingredients or ingredients
 
     queries = []
 
@@ -6050,17 +6042,6 @@ def search_web_recipes(user_ingredients, count=10):
             query = anchor + " recipe"
             if query not in queries:
                 queries.append(query)
-
-        if len(discovery_anchors) >= 2:
-            combined_query = (
-                discovery_anchors[0]
-                + " "
-                + discovery_anchors[1]
-                + " recipe"
-            )
-
-            if combined_query not in queries:
-                queries.append(combined_query)
 
     # Specific cheese selections must drive recipe discovery.
     # This overrides only the search query for cheese selections;
@@ -6241,11 +6222,19 @@ def search_web_recipes(user_ingredients, count=10):
         )
     )
 
+    # Give each query a chance to contribute recipes when the user
+    # entered multiple ingredients. Single-ingredient searches stay focused.
+    max_results_per_query = max(
+        1, (count + len(queries) - 1) // max(1, len(queries))
+    )
+
     try:
         results = []
         seen_urls = set()
+        query_result_groups = []
 
-        for query in queries:
+        for query_index, query in enumerate(queries):
+            query_results = []
             print("BRAVE SEARCH QUERY:", query)
             response = requests.get(
                 BRAVE_SEARCH_URL,
@@ -6579,19 +6568,54 @@ def search_web_recipes(user_ingredients, count=10):
                     if not recipe.get("description"):
                         recipe["description"] = description
 
-                    results.append(recipe)
+                    query_results.append(recipe)
 
-                    if len(results) >= count and not plant_based_search:
-                        # We already have enough usable recipes.
-                        # Pending futures are cancelled where possible.
+                    query_limit_reached = (
+                        len(ingredients) > 1
+                        and len(query_results)
+                        >= max_results_per_query
+                    )
+
+                    if (
+                        (len(query_results) >= count and not plant_based_search)
+                        or query_limit_reached
+                    ):
+                        # Allow multiple ingredient searches to contribute
+                        # before moving on. Keep the overall result cap.
                         for pending in futures:
                             if not pending.done():
                                 pending.cancel()
                         break
 
-            if len(results) >= count and not plant_based_search:
+            query_result_groups.append(query_results[:max_results_per_query] if len(ingredients) > 1 else query_results[:count])
+            if (
+                len(ingredients) > 1
+                and not plant_based_search
+                and query_index + 1 >= len(discovery_anchors)
+                and sum(len(group) for group in query_result_groups) >= count
+            ):
                 break
 
+        if plant_based_search:
+            results = [
+                recipe
+                for group in query_result_groups
+                for recipe in group
+            ][:count]
+        else:
+            results = []
+            max_group_size = max(
+                (len(group) for group in query_result_groups),
+                default=0,
+            )
+            for recipe_index in range(max_group_size):
+                for group in query_result_groups:
+                    if recipe_index < len(group):
+                        results.append(group[recipe_index])
+                    if len(results) >= count:
+                        break
+                if len(results) >= count:
+                    break
         return results
 
     except requests.HTTPError as e:
