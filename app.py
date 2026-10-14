@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 
 UNITS = {
     "cup", "cups", "tbsp", "tablespoon", "tablespoons", "tsp", "teaspoon", "teaspoons",
@@ -698,6 +699,7 @@ MEAT_GROUPS = {
 # CLEAN INGREDIENT WORDS
 # ---------------------------------------------------------
 
+@lru_cache(maxsize=10000)
 def clean_word(text):
     if not text:
         return ""
