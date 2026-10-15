@@ -788,9 +788,22 @@ def extract_ingredient_identities_with_gemini(raw_ingredients):
         "Keep each identity concise: ingredient names only, without amounts, "
         "units, preparation instructions, cooking directions, or commentary. "
         "Preserve meaningful ingredient specificity, including plant-based "
-        "or vegan identities. Do not turn vegan or plant-based ingredients "
-        "into animal products. Preserve explicit alternatives in one identity, "
-        "for example 'cider vinegar or white vinegar'. Do not invent ingredients. "
+        "or vegan identities. Never turn vegan or plant-based ingredients "
+        "into animal products. Preserve compound ingredient names: 'beef broth' "
+        "stays 'beef broth', 'chicken broth' stays 'chicken broth', 'ground beef' "
+        "stays 'ground beef', and 'vegan beef substitute' stays "
+        "'vegan beef substitute'. "
+        "Keep real alternatives separate using the word 'or'; never concatenate "
+        "their names into one phrase. For example, 'shallots / scallions' becomes "
+        "'shallots or scallions'; 'vegetable oil / canola oil / olive oil' becomes "
+        "'vegetable oil or canola oil or olive oil'; and 'thickened cream / heavy "
+        "cream' becomes 'thickened cream or heavy cream'. Never return a malformed "
+        "chain such as 'vegetable canola olive oil'. "
+        "Normalize count units and correct this clear grocery-name typo: "
+        "'3 garlic cloves, minced' becomes 'garlic'; 'parmisan' becomes "
+        "'parmesan'; and 'black peppercorns' becomes 'black pepper'. "
+        "Remove preparation descriptions, but do not remove words that change "
+        "ingredient identity. Do not invent ingredients. "
         "If a line does not identify an ingredient, return an empty string for "
         "that line. Input lines:\n"
         + json.dumps(source_lines, ensure_ascii=False)
@@ -10493,14 +10506,38 @@ def recipe_display_ingredient_identity(value):
     if not isinstance(value, str) or not value.strip():
         return ""
 
-    # One OR group is one requirement. Its alternatives remain in the
-    # matcher; display only the primary identity.
-    primary = re.split(
-        r"\s+(?:and/or|or)\s+",
+    # Matching retains alternatives as one requirement. At the display
+    # boundary, choose the first usable grocery identity from OR/slash choices.
+    source_parts = re.split(
+        r"\s+(?:and/or|or)\s+|\s+/\s+",
         value.strip(),
-        maxsplit=1,
         flags=re.IGNORECASE,
-    )[0].strip(" ,;")
+    )
+
+    if len(source_parts) > 1:
+        candidates = []
+
+        for source_part in source_parts:
+            candidate = recipe_display_ingredient_identity(source_part)
+            if candidate and candidate.lower() not in {
+                item.lower() for item in candidates
+            }:
+                candidates.append(candidate)
+
+        # When the recipe explicitly offers both terms, use the familiar
+        # US grocery name rather than reducing either phrase to "cream".
+        candidate_lookup = {
+            item.lower(): item for item in candidates
+        }
+        if (
+            "thickened cream" in candidate_lookup
+            and "heavy cream" in candidate_lookup
+        ):
+            return candidate_lookup["heavy cream"]
+
+        return candidates[0] if candidates else ""
+
+    primary = source_parts[0].strip(" ,;")
 
     if not primary:
         return ""
@@ -10579,9 +10616,49 @@ def recipe_display_ingredient_identity(value):
     if not primary:
         return ""
 
+    # A dangling descriptor is not itself a grocery ingredient.
+    if primary.lower().strip(" .,:;-") == "thickened":
+        return ""
+
     identity = extract_recipe_ingredient_noun_phrase(primary)
     if not identity:
         return ""
+
+    # A clove is a quantity unit when the ingredient is garlic.
+    identity = re.sub(
+        r"\bgarlic\s+cloves?\b",
+        "garlic",
+        identity,
+        flags=re.IGNORECASE,
+    )
+
+    # Correct this unambiguous grocery-name misspelling without applying
+    # broad vocabulary canonicalization to every displayed ingredient.
+    identity_typos = {
+        "parmisan": "parmesan",
+        "parmisan cheese": "parmesan cheese",
+    }
+    identity = identity_typos.get(identity.lower(), identity)
+
+    # Some extracted alternatives lose their separators, for example
+    # "vegetable canola olive oil". Keep the first valid oil identity.
+    oil_types = re.findall(
+        r"\b(?:vegetable|canola|olive|avocado|sunflower|grapeseed|"
+        r"peanut|sesame|coconut|corn|safflower|soybean|rapeseed|neutral)\b",
+        identity,
+        flags=re.IGNORECASE,
+    )
+    if (
+        len(oil_types) > 1
+        and re.fullmatch(
+            r"(?:(?:vegetable|canola|olive|avocado|sunflower|grapeseed|"
+            r"peanut|sesame|coconut|corn|safflower|soybean|rapeseed|neutral)"
+            r"\s+)+oil",
+            identity,
+            flags=re.IGNORECASE,
+        )
+    ):
+        identity = f"{oil_types[0].lower()} oil"
 
     # Universal pantry staples should never appear as missing items.
     # Use a general head-word rule as a fallback if the matcher does
@@ -10608,7 +10685,9 @@ def recipe_display_ingredient_identity(value):
 
     if (
         words
-        and words[-1] in {"salt", "pepper", "water"}
+        and words[-1] in {
+            "salt", "pepper", "peppercorn", "peppercorns", "water"
+        }
         and all(word in staple_modifiers for word in words[:-1])
     ):
         return ""
