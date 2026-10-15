@@ -762,6 +762,80 @@ def clean_word(text):
 # or editorial wording surrounding the actual ingredient noun phrase.
 # ---------------------------------------------------------
 
+def extract_ingredient_identities_with_gemini(raw_ingredients):
+    """
+    Use Gemini to extract ingredient identities from a recipe's actual
+    ingredient lines. Return one identity per source line, or None on failure.
+    The existing extractor remains the fallback if Gemini is unavailable.
+    """
+    import json
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key or not raw_ingredients:
+        return None
+
+    source_lines = [
+        item if isinstance(item, str) else ""
+        for item in raw_ingredients
+    ]
+
+    prompt = (
+        "You extract ingredient identities from a recipe ingredient list. "
+        "The input is the actual ingredient list from one recipe, not general "
+        "webpage text. Return JSON only in this exact shape: "
+        '{"ingredients":["ingredient identity", ...]}. '
+        "Return exactly one string for each input line, in the same order. Return core ingredient identities only. Remove preparation or state descriptors such as boneless, skinless, diced, chopped, sliced, shredded, softened, melted, room-temperature, divided, thawed, rinsed, or drained. For example, 'boneless, skinless chicken breasts, diced' becomes 'chicken breasts'. Preserve terms that identify a distinct ingredient form or product, such as ground beef, garlic powder, and vegan beef substitute. "
+        "Keep each identity concise: ingredient names only, without amounts, "
+        "units, preparation instructions, cooking directions, or commentary. "
+        "Preserve meaningful ingredient specificity, including plant-based "
+        "or vegan identities. Do not turn vegan or plant-based ingredients "
+        "into animal products. Preserve explicit alternatives in one identity, "
+        "for example 'cider vinegar or white vinegar'. Do not invent ingredients. "
+        "If a line does not identify an ingredient, return an empty string for "
+        "that line. Input lines:\n"
+        + json.dumps(source_lines, ensure_ascii=False)
+    )
+
+    try:
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                },
+            },
+            timeout=25,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        response_text = (
+            payload["candidates"][0]["content"]["parts"][0]["text"]
+        )
+        parsed = json.loads(response_text)
+        identities = parsed.get("ingredients")
+
+        if (
+            not isinstance(identities, list)
+            or len(identities) != len(source_lines)
+            or any(not isinstance(item, str) for item in identities)
+        ):
+            print("Gemini ingredient extraction returned an invalid result; using existing extractor.")
+            return None
+
+        print("Gemini extracted ingredient identities for", len(source_lines), "source lines.")
+        return identities
+
+    except Exception as exc:
+        # Do not print request headers or secrets.
+        print("Gemini ingredient extraction unavailable; using existing extractor:", type(exc).__name__)
+        return None
+
+
 def extract_recipe_ingredient_noun_phrase(raw_text):
     """
     Universal recipe ingredient identity extractor.
@@ -6384,14 +6458,28 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
                     )
                     recipe["raw_ingredients"] = raw_ingredients
 
+                    # Ask Gemini to identify ingredients from the complete
+                    # source list in one request. Keep the original lines above.
+                    gemini_identities = extract_ingredient_identities_with_gemini(
+                        raw_ingredients
+                    )
+
                     cleaned_ingredients = []
-                    for raw_ingredient in raw_ingredients:
+                    for ingredient_index, raw_ingredient in enumerate(raw_ingredients):
                         if not isinstance(raw_ingredient, str):
                             continue
 
-                        normalized = extract_recipe_ingredient_noun_phrase(
-                            raw_ingredient
+                        normalized = (
+                            gemini_identities[ingredient_index].strip()
+                            if gemini_identities
+                            and ingredient_index < len(gemini_identities)
+                            and isinstance(gemini_identities[ingredient_index], str)
+                            else ""
                         )
+                        if not normalized:
+                            normalized = extract_recipe_ingredient_noun_phrase(
+                                raw_ingredient
+                            )
                         alternatives = []
 
                         if not normalized:
