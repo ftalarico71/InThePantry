@@ -10463,6 +10463,141 @@ def recipe_cuisine_matches(recipe, selected_cuisine):
     )
 
 
+def recipe_display_ingredient_identity(value):
+    """
+    Universal display-only cleanup for recipe ingredient identities.
+    Matching retains the complete alternative group; display shows one
+    clean identity. Original recipe source lines remain unchanged.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return ""
+
+    # One OR group is one requirement. Its alternatives remain in the
+    # matcher; display only the primary identity.
+    primary = re.split(
+        r"\s+(?:and/or|or)\s+",
+        value.strip(),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,;")
+
+    if not primary:
+        return ""
+
+    # Remove universal preparation, state, size, and serving descriptors.
+    # These describe the ingredient; they are not separate ingredients.
+    descriptors = (
+        "at room temperature",
+        "room temperature",
+        "room-temperature",
+        "for serving",
+        "for garnish",
+        "to taste",
+        "as needed",
+        "boneless",
+        "skinless",
+        "freshly",
+        "fresh",
+        "frozen",
+        "defrosted",
+        "thawed",
+        "uncooked",
+        "cooked",
+        "raw",
+        "peeled",
+        "seeded",
+        "deveined",
+        "diced",
+        "chopped",
+        "sliced",
+        "shredded",
+        "softened",
+        "melted",
+        "divided",
+        "rinsed",
+        "drained",
+        "minced",
+        "grated",
+        "crushed",
+        "smashed",
+        "cubed",
+        "halved",
+        "quartered",
+        "trimmed",
+        "sifted",
+        "beaten",
+        "whisked",
+        "finely",
+        "coarsely",
+        "roughly",
+        "lightly",
+        "thinly",
+        "thickly",
+        "large",
+        "medium",
+        "small",
+        "reserved",
+        "optional",
+        "garnishing",
+        "garnish",
+        "zested",
+        "juiced",
+    )
+
+    for descriptor in sorted(descriptors, key=len, reverse=True):
+        primary = re.sub(
+            r"(?<!\w)" + re.escape(descriptor) + r"(?!\w)",
+            " ",
+            primary,
+            flags=re.IGNORECASE,
+        )
+
+    primary = re.sub(r"[,;]+", " ", primary)
+    primary = re.sub(r"\s+", " ", primary).strip(" ,;:-")
+
+    if not primary:
+        return ""
+
+    identity = extract_recipe_ingredient_noun_phrase(primary)
+    if not identity:
+        return ""
+
+    # Universal pantry staples should never appear as missing items.
+    # Use a general head-word rule as a fallback if the matcher does
+    # not recognize a source variant of salt, pepper, or water.
+    identity_key = clean_word(identity).lower().strip()
+
+    staple_names = {
+        clean_word(item).lower().strip()
+        for item in PANTRY_STAPLES
+        if isinstance(item, str) and clean_word(item)
+    }
+
+    if identity_key in staple_names:
+        return ""
+
+    words = identity_key.split()
+    staple_modifiers = {
+        "coarse", "fine", "kosher", "sea", "table", "pink",
+        "himalayan", "black", "white", "fresh", "freshly",
+        "ground", "cracked", "lukewarm", "warm", "cold", "hot",
+        "filtered", "distilled", "boiling", "boiled", "room",
+        "temperature",
+    }
+
+    if (
+        words
+        and words[-1] in {"salt", "pepper", "water"}
+        and all(word in staple_modifiers for word in words[:-1])
+    ):
+        return ""
+
+    # Do not use broad family matching at this display boundary:
+    # a real ingredient such as bell pepper must not be removed as a staple.
+    # Exact staples and approved staple modifiers were handled above.
+    return identity
+
+
 def find_recipes(
     user_ingredients,
     search_terms=None,
@@ -10889,9 +11024,7 @@ def find_recipes(
             # Final universal noun-identity boundary.
             # Nothing reaches the user-facing Have list unless it
             # resolves to an ingredient noun/noun phrase.
-            cleaned_identity = extract_recipe_ingredient_noun_phrase(
-                identity
-            )
+            cleaned_identity = recipe_display_ingredient_identity(identity)
 
             if cleaned_identity:
                 matched.append(cleaned_identity)
@@ -10914,9 +11047,7 @@ def find_recipes(
             # Final universal noun-identity boundary.
             # This prevents raw quantities, units, preparation text,
             # and source/editorial wording from ever reaching Need.
-            cleaned_identity = extract_recipe_ingredient_noun_phrase(
-                identity
-            )
+            cleaned_identity = recipe_display_ingredient_identity(identity)
 
             if cleaned_identity:
                 missing.append(cleaned_identity)
@@ -10973,21 +11104,22 @@ def find_recipes(
         for item in missing_items:
 
             ingredient = item["ingredient"]
+            display_ingredient = recipe_display_ingredient_identity(ingredient)
             options = item.get(
                 "substitutions",
                 []
             )
 
-            if not options:
+            if not options or not display_ingredient:
                 continue
 
-            substitutions[ingredient] = [
+            substitutions[display_ingredient] = [
                 option["replacement"]
                 for option in options
                 if option.get("replacement")
             ]
 
-            substitution_notes[ingredient] = {}
+            substitution_notes[display_ingredient] = {}
 
             for option in options:
 
@@ -10998,7 +11130,7 @@ def find_recipes(
                 if not replacement:
                     continue
 
-                substitution_notes[ingredient][
+                substitution_notes[display_ingredient][
                     replacement
                 ] = {
                     "rating": (
