@@ -11934,7 +11934,54 @@ HTML = """
             border-radius: 20px;
         }
 
-        .have {
+
+.shopping-list-panel {
+    margin: 22px 0;
+    padding: 18px;
+    border-radius: 12px;
+    background: rgba(247, 243, 237, 0.88);
+    border: 1px solid rgba(100, 90, 75, 0.22);
+}
+.shopping-list-panel h2 {
+    margin-top: 0;
+}
+.shopping-list-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid rgba(100, 90, 75, 0.16);
+}
+.shopping-list-item span {
+    flex: 1;
+    overflow-wrap: anywhere;
+}
+.shopping-list-item.is-checked span {
+    text-decoration: line-through;
+    opacity: 0.6;
+}
+.shopping-list-remove {
+    padding: 5px 9px;
+    background: #777;
+    color: white;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.shopping-list-add {
+    margin: 8px 8px 8px 0;
+    padding: 9px 12px;
+    background: #426b45;
+    color: white;
+    border: 0;
+    border-radius: 7px;
+    cursor: pointer;
+}
+.shopping-list-actions {
+    margin-top: 12px;
+}
+
+.have {
             color: #188038;
             font-weight: bold;
         }
@@ -12154,6 +12201,162 @@ function clearPantry(event) {
 
 </script>
 <script>
+
+
+const SHOPPING_LIST_STORAGE_KEY = "inThePantryShoppingList";
+
+function readShoppingList() {
+    try {
+        const saved = JSON.parse(
+            localStorage.getItem(SHOPPING_LIST_STORAGE_KEY) || "[]"
+        );
+        return Array.isArray(saved)
+            ? saved.filter(function(item) {
+                return item && typeof item.name === "string";
+            })
+            : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function writeShoppingList(items) {
+    try {
+        localStorage.setItem(
+            SHOPPING_LIST_STORAGE_KEY,
+            JSON.stringify(items)
+        );
+        return true;
+    } catch (error) {
+        alert("Your browser could not save the shopping list.");
+        return false;
+    }
+}
+
+function renderShoppingList() {
+    const list = document.getElementById("shopping-list-items");
+    const empty = document.getElementById("shopping-list-empty");
+
+    if (!list || !empty) {
+        return;
+    }
+
+    const items = readShoppingList();
+    list.replaceChildren();
+    empty.hidden = items.length > 0;
+
+    items.forEach(function(item, index) {
+        const row = document.createElement("li");
+        row.className = "shopping-list-item" +
+            (item.checked ? " is-checked" : "");
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = Boolean(item.checked);
+        checkbox.setAttribute(
+            "aria-label",
+            "Mark " + item.name + " as purchased"
+        );
+        checkbox.addEventListener("change", function() {
+            const current = readShoppingList();
+            if (!current[index]) {
+                return;
+            }
+            current[index].checked = checkbox.checked;
+            if (writeShoppingList(current)) {
+                renderShoppingList();
+            }
+        });
+
+        const name = document.createElement("span");
+        name.textContent = item.name;
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "shopping-list-remove";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", "Remove " + item.name);
+        remove.addEventListener("click", function() {
+            const current = readShoppingList();
+            current.splice(index, 1);
+            if (writeShoppingList(current)) {
+                renderShoppingList();
+            }
+        });
+
+        row.appendChild(checkbox);
+        row.appendChild(name);
+        row.appendChild(remove);
+        list.appendChild(row);
+    });
+}
+
+function addRecipeMissingToShoppingList(button) {
+    let missing;
+
+    try {
+        missing = JSON.parse(button.dataset.missing || "[]");
+    } catch (error) {
+        alert("Could not read this recipe's missing ingredients.");
+        return;
+    }
+
+    if (!Array.isArray(missing)) {
+        return;
+    }
+
+    const items = readShoppingList();
+    const known = new Set(
+        items.map(function(item) {
+            return item.name.trim().toLowerCase();
+        })
+    );
+    let added = 0;
+
+    missing.forEach(function(value) {
+        if (typeof value !== "string") {
+            return;
+        }
+
+        const name = value.trim();
+        const key = name.toLowerCase();
+
+        if (name && !known.has(key)) {
+            items.push({ name: name, checked: false });
+            known.add(key);
+            added += 1;
+        }
+    });
+
+    if (writeShoppingList(items)) {
+        renderShoppingList();
+
+        const panel = document.getElementById("shopping-list-panel");
+        if (panel) {
+            panel.scrollIntoView({
+                behavior: "smooth",
+                block: "nearest"
+            });
+        }
+
+        alert(added
+            ? "Added " + added + " new ingredient(s) to your shopping list."
+            : "Those missing ingredients are already on your shopping list.");
+    }
+}
+
+function clearShoppingList() {
+    if (!readShoppingList().length) {
+        renderShoppingList();
+        return;
+    }
+
+    if (confirm("Clear every item from your shopping list?")) {
+        if (writeShoppingList([])) {
+            renderShoppingList();
+        }
+    }
+}
 
 function toggleRecipe(button) {
     const details = button.nextElementSibling;
@@ -12610,6 +12813,7 @@ function initializeRecipeSearch() {
             }
 
             replacementForm.after(resultsFragment);
+            renderShoppingList();
 
             initializeRecipeSearch();
 
@@ -12653,6 +12857,7 @@ function initializeRecipeSearch() {
 }
 
 document.addEventListener("DOMContentLoaded", function () {
+    renderShoppingList();
     updateKitchenMusicButton();
     initializeRecipeSearch();
     initializeKitchenMusic();
@@ -12967,6 +13172,22 @@ document.addEventListener("DOMContentLoaded", function () {
 </button>
 
 </form>
+
+<section class="shopping-list-panel" id="shopping-list-panel"
+         aria-labelledby="shopping-list-heading">
+    <h2 id="shopping-list-heading">🛒 My Shopping List</h2>
+    <p id="shopping-list-empty">
+        Add missing ingredients from any recipe to build your list.
+    </p>
+    <ul id="shopping-list-items" style="list-style: none; padding: 0;"></ul>
+    <div class="shopping-list-actions">
+        <button type="button" onclick="clearShoppingList()"
+                style="background: #777;">
+            Clear Shopping List
+        </button>
+    </div>
+</section>
+
     {% if searched %}
 
         {% if recipes %}
@@ -13118,6 +13339,17 @@ document.addEventListener("DOMContentLoaded", function () {
         🎉 You have everything!
     </p>
 
+{% endif %}
+
+{% if recipe.missing %}
+<button
+    type="button"
+    class="shopping-list-add"
+    data-missing="{{ recipe.missing | tojson | forceescape }}"
+    onclick="addRecipeMissingToShoppingList(this)"
+>
+    🛒 Add Missing Ingredients to Shopping List
+</button>
 {% endif %}
 
 <button type="button" class="recipe-toggle" onclick="toggleRecipe(this)">
