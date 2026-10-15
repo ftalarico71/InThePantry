@@ -6105,17 +6105,38 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
 
     queries = []
 
+    non_recipe_domain_exclusions = (
+        " -site:youtube.com"
+        " -site:reddit.com"
+        " -site:pinterest.com"
+        " -site:tiktok.com"
+        " -site:facebook.com"
+        " -site:instagram.com"
+    )
+
     if len(ingredients) == 1:
-        ingredient_query = ingredients[0]
+        ingredient_query = ingredients[0].strip()
 
         queries = [
-            ingredient_query + " recipe",
-            ingredient_query + " recipes",
-            "recipes with " + ingredient_query,
+            (
+                f'"{ingredient_query}" recipe'
+                f'{non_recipe_domain_exclusions}'
+            ),
+            (
+                f'site:recipetineats.com '
+                f'"{ingredient_query}" recipe'
+            ),
+            (
+                f'site:allrecipes.com '
+                f'"{ingredient_query}" recipe'
+            ),
         ]
     else:
         for anchor in discovery_anchors:
-            query = anchor + " recipe"
+            query = (
+                f'"{anchor}" recipe'
+                f'{non_recipe_domain_exclusions}'
+            )
             if query not in queries:
                 queries.append(query)
 
