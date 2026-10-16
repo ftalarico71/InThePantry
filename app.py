@@ -64,6 +64,9 @@ BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 RECIPE_CACHE = {}
 
+# Limit concurrent Gemini cleanup requests to avoid flooding the API.
+_GEMINI_EXECUTOR = ThreadPoolExecutor(max_workers=3)
+
 # ---------------------------------------------------------
 # PANTRY STAPLES
 # These don't count as ingredients the user needs to buy.
@@ -762,6 +765,68 @@ def clean_word(text):
 # or editorial wording surrounding the actual ingredient noun phrase.
 # ---------------------------------------------------------
 
+def _ollama_extract_ingredient_name(raw_text):
+    """
+    Ask the locally running Ollama model for an ingredient identity.
+    Return None on any failure so callers can use the existing extractor.
+    This function does not call OpenAI.
+    """
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return None
+
+    url = os.getenv(
+        "OLLAMA_BASE_URL",
+        "http://localhost:11434"
+    ).rstrip("/") + "/api/generate"
+
+    payload = {
+        "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
+        "stream": False,
+        "format": "json",
+        "prompt": (
+            "Extract the ingredient identity from this one recipe "
+            "ingredient line. Return JSON only in this exact shape: "
+            '{"ingredient": "ingredient name"}. '
+            "Remove quantities, measurements, and preparation instructions. "
+            "Keep the actual ingredient specific; do not replace it with "
+            "a broader ingredient. Preserve alternatives joined by 'or'. "
+            "Do not invent ingredients. If no reliable ingredient identity "
+            "can be identified, return {\"ingredient\": \"\"}.\n"
+            "Recipe ingredient line: " + raw_text
+        ),
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=8)
+        response.raise_for_status()
+        result = response.json()
+        model_text = result.get("response", "")
+        parsed = json.loads(model_text)
+
+        if not isinstance(parsed, dict):
+            return None
+
+        ingredient = parsed.get("ingredient")
+        if not isinstance(ingredient, str):
+            return None
+
+        ingredient = re.sub(r"\s+", " ", ingredient).strip()
+
+        if (
+            not ingredient
+            or len(ingredient) > 120
+            or any(char.isdigit() for char in ingredient)
+            or "\n" in ingredient
+            or "\r" in ingredient
+        ):
+            return None
+
+        return ingredient.lower()
+
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return None
+
+
 def extract_ingredient_identities_with_gemini(raw_ingredients):
     """
     Use Gemini to extract ingredient identities from a recipe's actual
@@ -784,7 +849,38 @@ def extract_ingredient_identities_with_gemini(raw_ingredients):
         "The input is the actual ingredient list from one recipe, not general "
         "webpage text. Return JSON only in this exact shape: "
         '{"ingredients":["ingredient identity", ...]}. '
-        "Return exactly one string for each input line, in the same order. Return core ingredient identities only. Remove preparation or state descriptors such as boneless, skinless, diced, chopped, sliced, shredded, softened, melted, room-temperature, divided, thawed, rinsed, or drained. For example, 'boneless, skinless chicken breasts, diced' becomes 'chicken breasts'. Preserve terms that identify a distinct ingredient form or product, such as ground beef, garlic powder, and vegan beef substitute. "
+        "Return exactly one string for every input line, in the same order, "
+        "so the output array has the same length as the input array. Interpret "
+        "the complete ingredient list together instead of treating each line "
+        "as isolated. If scraping has split one ingredient identity across "
+        "adjacent entries, reconstruct the complete ingredient in the earliest "
+        "applicable output slot and return an empty string for continuation-only "
+        "slots. Never return a fragment of one ingredient as a separate grocery "
+        "item. For example, an entry ending in 'baby' followed by an entry "
+        "'carrots' should produce 'baby carrots' in the first slot and an empty "
+        "string in the second slot. Apply this contextual reconstruction rule "
+        "to fragmented ingredient names generally; the example is illustrative, "
+        "not a special-case rule. "
+        "Your task is to identify the grocery ingredient, not to rewrite or "
+        "copy the source line. Return only the shortest natural grocery "
+        "ingredient identity that preserves what the ingredient actually is. "
+        "Remove quantities, fractions, measurements, package counts, portion "
+        "counts, sizes, shapes, preparation instructions, cooking states, and "
+        "presentation descriptions. Remove words that describe only a portion "
+        "or part of an ingredient, rather than the ingredient normally named "
+        "on a grocery list. For example, 'chicken breast halves' becomes "
+        "'chicken breast'; 'fresh parsley leaves, chopped' becomes 'parsley'; "
+        "'1/2 cup grated Pecorino Romano cheese' becomes "
+        "'Pecorino Romano cheese'; 'garlic powder - 2 teaspoons' becomes "
+        "'garlic powder'; and '3 garlic cloves, minced' becomes 'garlic'. "
+        "Do not leave amount or preparation wording attached to an identity. "
+        "Do not blindly delete words that are part of a recognized ingredient "
+        "name. For example, 'bay leaves' remains 'bay leaves'. Use the actual "
+        "meaning of the complete phrase to decide whether a word identifies "
+        "the ingredient or merely describes its portion or preparation. "
+        "Preserve meaningful specificity, such as ground beef, garlic powder, "
+        "chicken stock, half-and-half, and vegan beef substitute. Do not "
+        "replace a specific ingredient with a different ingredient. "
         "Keep each identity concise: ingredient names only, without amounts, "
         "units, preparation instructions, cooking directions, or commentary. "
         "Preserve meaningful ingredient specificity, including plant-based "
@@ -820,6 +916,16 @@ def extract_ingredient_identities_with_gemini(raw_ingredients):
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "responseMimeType": "application/json",
+                    "responseSchema": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "ingredients": {
+                                "type": "ARRAY",
+                                "items": {"type": "STRING"},
+                            }
+                        },
+                        "required": ["ingredients"],
+                    },
                 },
             },
             timeout=25,
@@ -844,8 +950,23 @@ def extract_ingredient_identities_with_gemini(raw_ingredients):
         return identities
 
     except Exception as exc:
-        # Do not print request headers or secrets.
-        print("Gemini ingredient extraction unavailable; using existing extractor:", type(exc).__name__)
+        # Report enough detail to distinguish API failures from parsing errors.
+        # Never print request headers, environment variables, or API secrets.
+        detail = ""
+        error_response = getattr(exc, "response", None)
+
+        if error_response is not None:
+            detail = (
+                f" | HTTP {error_response.status_code}: "
+                f"{str(error_response.text)[:400]}"
+            )
+        elif isinstance(exc, requests.RequestException):
+            detail = f" | {str(exc)[:300]}"
+
+        print(
+            "Gemini ingredient extraction failed; existing extractor will be used:",
+            type(exc).__name__ + detail,
+        )
         return None
 
 
@@ -6076,6 +6197,115 @@ def match_recipe_to_pantry(recipe, pantry_items):
 
 
 
+
+_IDENTITY_TRAILING_AMOUNT_RE = re.compile(
+    r"\s*(?:[-–—:]\s*)?"
+    r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?|[¼½¾⅓⅔⅛⅜⅝⅞])"
+    r"\s*(?:teaspoons?|tsp|tablespoons?|tbsp|tbs|cups?|c\b|"
+    r"ounces?|oz|pounds?|lbs?|grams?|g\b|kilograms?|kg\b|"
+    r"milliliters?|millilitres?|ml\b|liters?|litres?|l\b|"
+    r"cloves?|heads?|packages?|packets?|cans?|bunches?|"
+    r"stalks?|sprigs?|slices?|pieces?|pinches?|dashes?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _ingredient_identity_only(value):
+    """Return an ingredient identity, not an amount-bearing display string."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+
+    cleaned = _IDENTITY_TRAILING_AMOUNT_RE.sub("", value.strip())
+    cleaned = cleaned.strip(" \t-–—:;,")
+    if not cleaned:
+        return ""
+
+    return extract_recipe_ingredient_noun_phrase(cleaned)
+
+
+def _identity_only_display_list(values):
+    """Build deduplicated Have/Need labels without altering shopping data."""
+    result = []
+    seen = set()
+
+    if not isinstance(values, (list, tuple)):
+        return result
+
+    for value in values:
+        identity = _ingredient_identity_only(value)
+        if not identity:
+            continue
+
+        # Use the established display cleaner for common descriptors/typos.
+        display_identity = recipe_display_ingredient_identity(identity)
+        identity = (display_identity or identity).strip()
+        key = identity.casefold()
+
+        if identity and key not in seen:
+            seen.add(key)
+            result.append(identity)
+
+    return result
+
+
+
+# Shared protein-family definitions: discovery, matching, filtering, and
+# multi-protein balancing must all use this same map.
+PROTEIN_FAMILY_PATTERNS = {
+    "Plant-Based": re.compile(
+        r"\b(?:tofu|tempeh|seitan|lentils?|chickpeas?|edamame|"
+        r"(?:vegan|plant[- ]based|meatless)\s+(?:ground\s+)?"
+        r"(?:beef|chicken|pork|turkey|sausage|meat|protein)|"
+        r"(?:beef|chicken|pork|turkey)\s+substitute)\b",
+        re.IGNORECASE,
+    ),
+    "Eggs": re.compile(r"\beggs?\b", re.IGNORECASE),
+    "Beef": re.compile(
+        r"\b(?:beef|brisket|steak|chuck\s+roast|pot\s+roast|"
+        r"short\s+ribs?|oxtail|bison)\b",
+        re.IGNORECASE,
+    ),
+    "Chicken": re.compile(r"\bchicken\b", re.IGNORECASE),
+    "Turkey": re.compile(r"\bturkey\b", re.IGNORECASE),
+    "Pork": re.compile(
+        r"\b(?:pork|bacon|ham|sausage|prosciutto|pancetta)\b",
+        re.IGNORECASE,
+    ),
+    "Lamb": re.compile(r"\blamb\b", re.IGNORECASE),
+    "Seafood": re.compile(
+        r"\b(?:fish|salmon|cod|haddock|tilapia|tuna|shrimp|prawn|"
+        r"seafood|crab|lobster|scallop|clam|mussel|oyster|trout|"
+        r"anchovy|sardine)\b",
+        re.IGNORECASE,
+    ),
+    "Other Meat": re.compile(
+        r"\b(?:duck|goose|venison|deer|rabbit|quail|pheasant|"
+        r"wild\s+boar)\b",
+        re.IGNORECASE,
+    ),
+}
+
+
+def _protein_family_for_ingredient(value):
+    """Classify a selected ingredient consistently across the whole app."""
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    if not text:
+        return None
+
+    # Stocks and sauces should not activate a main-protein-only search.
+    if re.search(
+        r"\b(?:broth|stock|bouillon|sauce|oil|extract|gravy)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return None
+
+    for family, pattern in PROTEIN_FAMILY_PATTERNS.items():
+        if pattern.search(text):
+            return family
+
+    return None
+
 def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
     if not user_ingredients:
         return []
@@ -6107,14 +6337,42 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
     # individual pantry item.
     # -------------------------------------------------------------
 
-    # Give every meaningful ingredient a discovery opportunity.
-    # Treat ingredient types equally; do not cap discovery at three.
+    # Put main proteins first when choosing search anchors.
+    # Non-protein ingredients still get a search opportunity, but they
+    # must not lead the results when the user selected a protein.
     meaningful_ingredients = [
         item for item in ingredients
         if item not in {"salt", "pepper", "water"}
     ]
 
-    discovery_anchors = meaningful_ingredients or ingredients
+    protein_anchor_pattern = re.compile(
+        r"\b(?:beef|chicken|pork|bacon|ham|sausage|lamb|turkey|"
+        r"fish|salmon|cod|haddock|tilapia|tuna|shrimp|prawn|seafood|"
+        r"crab|lobster|scallop|clam|mussel|oyster|trout|anchovy|sardine|"
+        r"tofu|tempeh|seitan|lentils?|chickpeas?|edamame|eggs?)\b",
+        re.IGNORECASE,
+    )
+
+    def is_protein_anchor(item):
+        return bool(
+            protein_anchor_pattern.search(item)
+            and not re.search(
+                r"\b(?:broth|stock)\b",
+                item,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    protein_anchors = [
+        item for item in meaningful_ingredients
+        if is_protein_anchor(item)
+    ]
+    other_anchors = [
+        item for item in meaningful_ingredients
+        if not is_protein_anchor(item)
+    ]
+
+    discovery_anchors = protein_anchors + other_anchors or ingredients
 
     queries = []
 
@@ -6153,6 +6411,54 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
             if query not in queries:
                 queries.append(query)
 
+    # When a main protein is selected, spend discovery requests on that
+    # protein instead of filling the candidate pool with side-only recipes.
+    # Actual recipe ingredients remain the source of truth for matching.
+    targeted_protein_anchors = {}
+    for ingredient in ingredients:
+        family = _protein_family_for_ingredient(ingredient)
+        if family:
+            targeted_protein_anchors.setdefault(family, ingredient)
+
+    targeted_protein_query_mode = bool(targeted_protein_anchors)
+
+    if targeted_protein_query_mode:
+        queries = []
+
+        # Prefer searches for individual dishes instead of collection pages.
+        # Exclude the common plural collection-title phrase for this protein.
+        protein_query_templates = (
+            '"{anchor}" easy dinner recipe',
+            '"{anchor}" baked recipe',
+            '"{anchor}" skillet recipe',
+            '"{anchor}" garlic recipe',
+            '"{anchor}" one pan recipe',
+            '"{anchor}" casserole recipe',
+        )
+
+        protein_anchors = list(dict.fromkeys(
+            targeted_protein_anchors.values()
+        ))
+
+        # Spread a maximum of six queries across selected protein families,
+        # so multiple selected proteins each get discovery opportunities.
+        for template in protein_query_templates:
+            for anchor in protein_anchors:
+                if len(queries) >= 6:
+                    break
+
+                query = (
+                    template.format(anchor=anchor)
+                    + non_recipe_domain_exclusions
+                    + f' -"{anchor} recipes"'
+                )
+
+                if query not in queries:
+                    queries.append(query)
+
+            if len(queries) >= 6:
+                break
+
     # Specific cheese selections must drive recipe discovery.
     # This overrides only the search query for cheese selections;
     # all existing non-cheese query behavior remains unchanged.
@@ -6189,7 +6495,7 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
         None,
     )
 
-    if selected_cheese:
+    if selected_cheese and not targeted_protein_query_mode:
         cheese_query = "recipes with " + selected_cheese
         if cheese_query not in queries:
             queries.append(cheese_query)
@@ -6334,9 +6640,9 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
 
     # Give each query a chance to contribute recipes when the user
     # entered multiple ingredients. Single-ingredient searches stay focused.
-    max_results_per_query = max(
-        1, (count + len(queries) - 1) // max(1, len(queries))
-    )
+    # Allow each query to contribute up to the requested batch target.
+    # Final aggregation still caps the complete result list at count.
+    max_results_per_query = max(1, int(count))
 
     try:
         # URLs already delivered for this exact search are excluded before
@@ -6391,7 +6697,23 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
             def fetch_candidate(candidate):
                 title, url, description = candidate
                 recipe = extract_web_recipe(url)
-                return title, url, description, recipe
+
+                # Start ingredient cleanup in a separate, bounded pool so
+                # multiple recipes can be cleaned while pages are processed.
+                gemini_future = None
+                if recipe:
+                    raw_ingredients = list(
+                        recipe.get("ingredients", []) or []
+                    )
+                    if raw_ingredients:
+                        gemini_future = _GEMINI_EXECUTOR.submit(
+                            extract_ingredient_identities_with_gemini,
+                            raw_ingredients,
+                        )
+
+                return (
+                    title, url, description, recipe, gemini_future
+                )
 
             with ThreadPoolExecutor(max_workers=8) as executor:
                 futures = [
@@ -6401,7 +6723,7 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
 
                 for future in as_completed(futures):
                     try:
-                        title, url, description, recipe = future.result()
+                        title, url, description, recipe, gemini_future = future.result()
                     except Exception as e:
                         print("Recipe extraction error:", e)
                         continue
@@ -6461,7 +6783,7 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
                                 flags=re.IGNORECASE,
                             )
                             or re.search(
-                                r"\brecipes?\b",
+                                r"\brecipes\b",
                                 recipe_name,
                                 flags=re.IGNORECASE,
                             )
@@ -6494,8 +6816,10 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
 
                     # Ask Gemini to identify ingredients from the complete
                     # source list in one request. Keep the original lines above.
-                    gemini_identities = extract_ingredient_identities_with_gemini(
-                        raw_ingredients
+                    gemini_identities = (
+                        gemini_future.result()
+                        if gemini_future is not None
+                        else None
                     )
 
                     cleaned_ingredients = []
@@ -6503,17 +6827,30 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
                         if not isinstance(raw_ingredient, str):
                             continue
 
-                        normalized = (
-                            gemini_identities[ingredient_index].strip()
-                            if gemini_identities
+                        has_gemini_identity = (
+                            gemini_identities is not None
                             and ingredient_index < len(gemini_identities)
                             and isinstance(gemini_identities[ingredient_index], str)
-                            else ""
                         )
-                        if not normalized:
-                            normalized = extract_recipe_ingredient_noun_phrase(
-                                raw_ingredient
-                            )
+
+                        if has_gemini_identity:
+                            gemini_identity = gemini_identities[ingredient_index].strip()
+
+                            # An empty Gemini slot is intentional: the source line
+                            # was a continuation fragment or not an ingredient.
+                            # Do not reintroduce it through the fallback extractor.
+                            if not gemini_identity:
+                                continue
+
+                            # Validate every non-empty Gemini identity through the
+                            # same deterministic cleaner used throughout the app.
+                            normalized = _ingredient_identity_only(gemini_identity)
+                            if not normalized:
+                                normalized = _ingredient_identity_only(raw_ingredient)
+                        else:
+                            # Fall back only when Gemini returned no usable aligned
+                            # result array, not when it intentionally left a slot blank.
+                            normalized = _ingredient_identity_only(raw_ingredient)
                         alternatives = []
 
                         if not normalized:
@@ -6718,12 +7055,23 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
                                 pending.cancel()
                         break
 
+            print(
+                f"[RECIPE DEBUG] query {query_index + 1}/{len(queries)}: "
+                f"candidate_urls={len(candidates)}, "
+                f"valid_recipes={len(query_results)}"
+            )
             query_result_groups.append(query_results[:max_results_per_query] if len(ingredients) > 1 else query_results[:count])
             if (
-                len(ingredients) > 1
-                and not plant_based_search
-                and query_index + 1 >= len(discovery_anchors)
+                not plant_based_search
                 and sum(len(group) for group in query_result_groups) >= count
+                and (
+                    len(ingredients) == 1
+                    or (
+                        targeted_protein_query_mode
+                        and len(targeted_protein_anchors) == 1
+                    )
+                    or query_index + 1 >= len(discovery_anchors)
+                )
             ):
                 break
 
@@ -6747,6 +7095,10 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
                         break
                 if len(results) >= count:
                     break
+        print(
+            f"[RECIPE DEBUG] group_sizes={[len(group) for group in query_result_groups]}, "
+            f"discovery_returned={len(results)}"
+        )
         return results
 
     except requests.HTTPError as e:
@@ -7344,6 +7696,15 @@ def _preserve_recipe_source_identity(text):
         count=1,
         flags=re.IGNORECASE,
     )
+
+    # Preserve named meat cuts after instructions such as cut into thighs and drumsticks.
+    cut_match = re.search(r"\bcut\s+into\s+(.+)$", text, flags=re.IGNORECASE)
+    if cut_match:
+        cut_parts = [part.strip().strip(" .,;") for part in re.split(r"\s+and\s+", cut_match.group(1), flags=re.IGNORECASE)]
+        recognized_cuts = r"(?:breasts?|thighs?|drumsticks?|wings?|legs?|tenders?|cutlets?|fillets?|steaks?)"
+        animal = re.search(r"\b(chicken|turkey|duck|pork|beef|lamb)\b", text[:cut_match.start()], flags=re.IGNORECASE)
+        if animal and cut_parts and all(re.fullmatch(recognized_cuts, part, flags=re.IGNORECASE) for part in cut_parts):
+            return " and ".join(animal.group(1).lower() + " " + part.lower() for part in cut_parts)
 
     # -------------------------------------------------------------
     # PREPARATION TAIL
@@ -9240,7 +9601,9 @@ def extract_ingredient_identity(text):
                             )
 
             if _result_clean not in _known_identity_values:
-                return ""
+                _alternative_parts = re.split(r"\s+(?:or|and/or)\s+", _result_clean, flags=re.IGNORECASE)
+                if len(_alternative_parts) < 2 or not all(extract_ingredient_identity(part) for part in _alternative_parts):
+                    return ""
 
     # Final universal guard against scraper metadata becoming an ingredient identity.
 
@@ -10721,9 +11084,10 @@ def find_recipes(
         # ingredients the user entered.
         search_results = search_web_recipes(
             user_ingredients,
-            count=30,
+            count=20,
             exclude_urls=exclude_urls,
         )
+        print(f"[RECIPE DEBUG] find_recipes received={len(search_results)}")
     except Exception as e:
         print("Web recipe search error:", e)
         return []
@@ -10738,13 +11102,111 @@ def find_recipes(
     # the user's chosen meat are ranked ahead of recipes that
     # only match side ingredients.
     selected_proteins = []
-    for item in user_ingredients or []:
-        cleaned_item = clean_word(item)
-        for meat_options in MEAT_GROUPS.values():
-            if cleaned_item in meat_options:
-                selected_proteins.append(cleaned_item)
-                break
 
+    selected_protein_families = set()
+    for item in user_ingredients or []:
+        family = _protein_family_for_ingredient(item)
+        cleaned_item = clean_word(item)
+        if family and cleaned_item:
+            selected_proteins.append(cleaned_item)
+            selected_protein_families.add(family)
+
+
+
+    # Rank recipes by the selected protein family, not exact cut wording.
+    # For example, selected "chicken breast" should prioritize chicken recipes.
+    protein_priority_patterns = {
+        "Beef": re.compile(r"\b(?:beef|steak|chuck\s+roast)\b", re.IGNORECASE),
+        "Chicken": re.compile(r"\bchicken\b", re.IGNORECASE),
+        "Pork": re.compile(
+            r"\b(?:pork|bacon|ham|sausage|prosciutto|pancetta)\b",
+            re.IGNORECASE,
+        ),
+        "Seafood": re.compile(
+            r"\b(?:fish|salmon|cod|haddock|tilapia|tuna|shrimp|prawn|seafood|"
+            r"crab|lobster|scallop|clam|mussel|oyster|trout|anchovy|sardine)\b",
+            re.IGNORECASE,
+        ),
+        "Lamb": re.compile(r"\blamb\b", re.IGNORECASE),
+        "Turkey": re.compile(r"\bturkey\b", re.IGNORECASE),
+        "Plant protein": re.compile(
+            r"\b(?:tofu|tempeh|seitan|lentils?|chickpeas?|edamame)\b",
+            re.IGNORECASE,
+        ),
+        "Eggs": re.compile(r"\beggs?\b", re.IGNORECASE),
+    }
+
+    def _recipe_uses_selected_protein(recipe_data, identities, selected_items):
+        selected_families = {
+            family
+            for selected_item in selected_items or []
+            for family, pattern in protein_priority_patterns.items()
+            if pattern.search(str(selected_item or ""))
+        }
+
+        if not selected_families:
+            return False
+
+        def same_type_match(candidate_text):
+            candidate_text = str(candidate_text or "")
+            candidate_is_plant_based = bool(
+                re.search(
+                    r"\b(?:vegan|plant[\s-]+based)\b",
+                    candidate_text,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+            for selected_item in selected_items or []:
+                selected_is_plant_based = bool(
+                    re.search(
+                        r"\b(?:vegan|plant[\s-]+based)\b",
+                        str(selected_item or ""),
+                        flags=re.IGNORECASE,
+                    )
+                )
+                if selected_is_plant_based != candidate_is_plant_based:
+                    continue
+
+                for family in selected_families:
+                    if protein_priority_patterns[family].search(
+                        str(selected_item or "")
+                    ) and protein_priority_patterns[family].search(candidate_text):
+                        return True
+
+            return False
+
+        name = str(recipe_data.get("name", "") or "")
+        if not re.search(r"\b(?:broth|stock)\b", name, re.IGNORECASE):
+            if same_type_match(name):
+                return True
+
+        for ingredient in identities or []:
+            ingredient_text = str(ingredient or "")
+            if re.search(
+                r"\b(?:broth|stock)\b",
+                ingredient_text,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            if same_type_match(ingredient_text):
+                return True
+
+        return False
+
+    def _recipe_matches_selected_protein_family(recipe_data, identities):
+        if not selected_protein_families:
+            return False
+
+        candidates = [str(recipe_data.get("name") or "")]
+        candidates.extend(
+            str(item or "") for item in (identities or [])
+        )
+
+        return any(
+            _protein_family_for_ingredient(item) in selected_protein_families
+            for item in candidates
+        )
 
     for result in search_results:
 
@@ -10802,10 +11264,10 @@ def find_recipes(
             if not isinstance(raw_ingredient, str):
                 continue
 
-            normalized = extract_recipe_ingredient_noun_phrase(
-                raw_ingredient
+            normalized, alternatives = normalize_recipe_ingredient(
+                raw_ingredient,
+                preserve_source=True
             )
-            alternatives = []
 
             if not normalized:
                 continue
@@ -11343,9 +11805,8 @@ def find_recipes(
                 match_percentage
             ),
 
-            "primary_match": 1 if any(
-                ingredient_matches(item, selected_proteins)
-                for item in matched
+            "primary_match": 1 if _recipe_matches_selected_protein_family(
+                recipe, recipe_ingredients
             ) else 0,
 
             "recipeCuisine": recipe.get(
@@ -11383,6 +11844,9 @@ def find_recipes(
     # that satisfy both. Otherwise preserve the existing preference order.
     scored_recipes.sort(
         key=lambda x: (
+            # A selected-protein match takes priority over a recipe that
+            # matches only produce, dairy, or other side ingredients.
+            x["primary_match"],
             x["clean_protein"],
             (
                 1
@@ -11391,7 +11855,6 @@ def find_recipes(
             ),
             x["diet_match"],
             x["cuisine_match"],
-            x["primary_match"],
             x["match_percentage"],
             x["used_count"],
             -x["missing_count"]
@@ -11399,33 +11862,30 @@ def find_recipes(
         reverse=True
     )
 
-    # Return a distinct batch of ten. When multiple protein groups were selected,
-    # deal recipes out round-robin so one group (often chicken) cannot dominate.
-    bucket_order = ["Beef", "Chicken", "Pork", "Seafood", "Lamb", "Turkey"]
-    protein_patterns = {
-        "Beef": re.compile(r"\b(?:beef|steak|chuck\s+roast)\b", re.IGNORECASE),
-        "Chicken": re.compile(r"\bchicken\b", re.IGNORECASE),
-        "Pork": re.compile(r"\b(?:pork|bacon|ham|sausage|prosciutto|pancetta)\b", re.IGNORECASE),
-        "Seafood": re.compile(
-            r"\b(?:fish|salmon|cod|haddock|tilapia|tuna|shrimp|prawn|seafood|"
-            r"crab|lobster|scallop|clam|mussel|oyster|trout|anchovy|sardine)\b",
-            re.IGNORECASE,
-        ),
-        "Lamb": re.compile(r"\blamb\b", re.IGNORECASE),
-        "Turkey": re.compile(r"\bturkey\b", re.IGNORECASE),
-    }
+    # Use the shared protein-family map for filtering and balancing.
+    bucket_order = list(PROTEIN_FAMILY_PATTERNS)
+    protein_patterns = PROTEIN_FAMILY_PATTERNS
 
     selected_bucket_set = set()
     for pantry_item in user_ingredients or []:
-        item_text = str(clean_word(pantry_item) or pantry_item or "")
-        for bucket in bucket_order:
-            if protein_patterns[bucket].search(item_text):
-                selected_bucket_set.add(bucket)
-                break
+        family = _protein_family_for_ingredient(pantry_item)
+        if family:
+            selected_bucket_set.add(family)
 
     selected_buckets = [
         bucket for bucket in bucket_order if bucket in selected_bucket_set
     ]
+
+    # Universal strict protein filter:
+    # with one selected protein family, every result must use that family;
+    # with multiple selected families, results may use any selected family.
+    # When no main protein was selected, preserve ordinary recipe variety.
+    if selected_buckets:
+        scored_recipes = [
+            candidate
+            for candidate in scored_recipes
+            if candidate.get("primary_match") == 1
+        ]
 
     # Remove duplicate recipe titles and duplicate source URLs within the same batch.
     unique_recipes = []
@@ -11457,22 +11917,22 @@ def find_recipes(
         unique_recipes.append(candidate)
 
     scored_recipes = unique_recipes
+    print(f"[RECIPE DEBUG] after_duplicate_removal={len(scored_recipes)}")
 
     def recipe_protein_bucket(candidate):
-        title = str(candidate.get("name") or "")
-        for bucket in bucket_order:
-            if protein_patterns[bucket].search(title):
-                return bucket
+        title_family = _protein_family_for_ingredient(
+            candidate.get("name") or ""
+        )
+        if title_family:
+            return title_family
 
         ingredient_scores = {bucket: 0 for bucket in bucket_order}
         for ingredient in candidate.get("ingredients", []) or []:
-            ingredient_text = str(ingredient or "")
-            for bucket in bucket_order:
-                if protein_patterns[bucket].search(ingredient_text):
-                    ingredient_scores[bucket] += 1
-                    break
+            family = _protein_family_for_ingredient(ingredient)
+            if family:
+                ingredient_scores[family] += 1
 
-        best_score = max(ingredient_scores.values()) if ingredient_scores else 0
+        best_score = max(ingredient_scores.values(), default=0)
         if best_score <= 0:
             return None
 
@@ -13268,7 +13728,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     <p class="have">
         🟢 You have {{ recipe.used_count }} of {{ recipe.total_count }} ingredients:
-        {{ recipe.matched | join(", ") }}
+        {{ recipe.matched_display | join(", ") }}
     </p>
 
 {% endif %}
@@ -13277,7 +13737,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     <p class="missing">
         🛒 You'll need:
-        {{ recipe.missing | join(", ") }}
+        {{ recipe.missing_display | join(", ") }}
     </p>
 
     {% if recipe.substitutions %}
@@ -13618,6 +14078,9 @@ def home():
                 selected_diet=selected_diet,
                 exclude_urls=request.form.getlist("seen_recipe_urls"),
             )
+            for recipe in recipes or []:
+                recipe["matched_display"] = _identity_only_display_list(recipe.get("matched", []))
+                recipe["missing_display"] = _identity_only_display_list(recipe.get("missing", []))
 
 
     return render_template_string(
