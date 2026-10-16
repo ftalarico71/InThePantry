@@ -6824,6 +6824,7 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
 
                     cleaned_ingredients = []
                     for ingredient_index, raw_ingredient in enumerate(raw_ingredients):
+                        alternatives = []
                         if not isinstance(raw_ingredient, str):
                             continue
 
@@ -6842,16 +6843,14 @@ def search_web_recipes(user_ingredients, count=10, exclude_urls=None):
                             if not gemini_identity:
                                 continue
 
-                            # Validate every non-empty Gemini identity through the
-                            # same deterministic cleaner used throughout the app.
+                            # Validate Gemini's identity with the existing cleaner.
                             normalized = _ingredient_identity_only(gemini_identity)
                             if not normalized:
-                                normalized = _ingredient_identity_only(raw_ingredient)
+                                # Do not reintroduce the original uncleaned recipe line.
+                                continue
                         else:
-                            # Fall back only when Gemini returned no usable aligned
-                            # result array, not when it intentionally left a slot blank.
+                            # Use the existing extractor only if Gemini has no usable result.
                             normalized = _ingredient_identity_only(raw_ingredient)
-                        alternatives = []
 
                         if not normalized:
                             continue
